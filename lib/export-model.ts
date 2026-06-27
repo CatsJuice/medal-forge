@@ -13,11 +13,22 @@ import {
 } from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { USDZExporter } from "three/examples/jsm/exporters/USDZExporter.js";
+import {
+  strFromU8,
+  strToU8,
+  unzipSync,
+  zipSync,
+} from "three/examples/jsm/libs/fflate.module.js";
 import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
 import type { MedalSettings } from "@/lib/types";
 
 type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
 type UsdSurfaceKind = "front" | "back" | "side";
+type UsdZipEntry = Uint8Array | [Uint8Array, { extra: Record<number, Uint8Array> }];
+
+const USD_GEOMETRY_FLOAT_PRECISION = 5;
+const USDA_FLOAT_PATTERN =
+  /(^|[^\w.])([-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\d+e[-+]?\d+)/gi;
 
 interface UsdSurfaceBucket {
   geometry: BufferGeometry;
@@ -125,13 +136,99 @@ async function exportGroupUsdz(group: Object3D): Promise<Blob> {
 
   try {
     const result = await exporter.parseAsync(group);
+    const optimizedResult = optimizeUsdGeometryPrecision(result);
 
-    return new Blob([result], {
+    return new Blob([optimizedResult], {
       type: getModelExportOption("usdz").mimeType,
     });
   } finally {
     restoreForUsd();
   }
+}
+
+function optimizeUsdGeometryPrecision(result: ArrayBuffer | Uint8Array) {
+  const files = unzipSync(
+    result instanceof Uint8Array ? result : new Uint8Array(result),
+  );
+  let hasOptimizedGeometry = false;
+
+  for (const [filename, data] of Object.entries(files)) {
+    if (!filename.startsWith("geometries/") || !filename.endsWith(".usda")) {
+      continue;
+    }
+
+    const text = strFromU8(data);
+    const optimizedText = quantizeUsdaFloatText(text);
+
+    if (optimizedText === text) {
+      continue;
+    }
+
+    files[filename] = strToU8(optimizedText);
+    hasOptimizedGeometry = true;
+  }
+
+  if (!hasOptimizedGeometry) {
+    return result instanceof Uint8Array ? getArrayBuffer(result) : result;
+  }
+
+  return getArrayBuffer(zipUsdFiles(files));
+}
+
+function quantizeUsdaFloatText(text: string) {
+  return text.replace(
+    USDA_FLOAT_PATTERN,
+    (match, prefix: string, value: string, offset: number) => {
+      const valueOffset = offset + prefix.length;
+
+      if (text.slice(Math.max(0, valueOffset - 6), valueOffset) === "#usda ") {
+        return match;
+      }
+
+      const numericValue = Number(value);
+
+      if (!Number.isFinite(numericValue)) {
+        return match;
+      }
+
+      return `${prefix}${Number(
+        numericValue.toPrecision(USD_GEOMETRY_FLOAT_PRECISION),
+      ).toString()}`;
+    },
+  );
+}
+
+function zipUsdFiles(sourceFiles: Record<string, Uint8Array>) {
+  const files: Record<string, UsdZipEntry> = { ...sourceFiles };
+  let offset = 0;
+
+  for (const filename in files) {
+    const fileEntry = files[filename];
+    const file = Array.isArray(fileEntry) ? fileEntry[0] : fileEntry;
+    const headerSize = 34 + filename.length;
+
+    offset += headerSize;
+
+    const offsetMod64 = offset & 63;
+
+    if (offsetMod64 !== 4) {
+      files[filename] = [
+        file,
+        { extra: { 12345: new Uint8Array(64 - offsetMod64) } },
+      ];
+    }
+
+    offset = file.length;
+  }
+
+  return zipSync(files, { level: 0 });
+}
+
+function getArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 }
 
 function makeUsdCompatibleMeshes(group: Object3D) {
