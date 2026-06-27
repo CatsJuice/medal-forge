@@ -11,7 +11,7 @@ A focused Next.js prototype for turning uploaded SVG files into simple 3D medal,
 - Select shapes from the layer list with Cmd/Ctrl-click multi-select, Shift-click range select, Cmd/Ctrl+A select all, and Esc clear.
 - Adjust per-shape thickness, bevel, material, color, precision, visibility, and front/back height offset.
 - Reset selected colors back to the original SVG color.
-- Export a GLB model and copy a React/Three code snippet.
+- Export GLB and USDZ models and copy a React/Three code snippet.
 
 ## Run
 

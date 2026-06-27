@@ -36,7 +36,13 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SVG,
 } from "@/lib/defaults";
-import { downloadBlob, exportMedalGlb } from "@/lib/export-model";
+import {
+  MODEL_EXPORT_OPTIONS,
+  downloadBlob,
+  exportMedalModel,
+  getModelExportOption,
+  type ModelExportFormat,
+} from "@/lib/export-model";
 import { MATERIAL_PRESETS } from "@/lib/materials";
 import { getShapeLabel, getSvgColor, resolveShapeSettings } from "@/lib/shape-settings";
 import { summarizeSvgPaths } from "@/lib/svg-summary";
@@ -1427,16 +1433,18 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
     }
   }
 
-  async function exportModel() {
+  async function exportModel(format: ModelExportFormat) {
+    const option = getModelExportOption(format);
+
     setIsBusy(true);
-    setStatus("Preparing GLB export");
+    setStatus(`Preparing ${option.label} export`);
 
     try {
-      const blob = await exportMedalGlb(svgText, settings);
-      downloadBlob(blob, `${getFileStem(fileName)}.glb`);
-      setStatus("GLB exported");
+      const blob = await exportMedalModel(svgText, settings, format);
+      downloadBlob(blob, `${getFileStem(fileName)}.${option.extension}`);
+      setStatus(`${option.label} exported`);
     } catch {
-      setStatus("GLB export failed");
+      setStatus(`${option.label} export failed`);
     } finally {
       setIsBusy(false);
     }
@@ -2057,15 +2065,22 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                 <Download size={14} />
               </div>
               <div className="export-actions">
-                <button
-                  className="text-button primary export-button"
-                  disabled={isBusy}
-                  onClick={exportModel}
-                  type="button"
-                >
-                  <Download size={16} />
-                  Export GLB
-                </button>
+                {MODEL_EXPORT_OPTIONS.map((option, index) => (
+                  <button
+                    className={
+                      index === 0
+                        ? "text-button primary export-button"
+                        : "text-button export-button"
+                    }
+                    disabled={isBusy}
+                    key={option.format}
+                    onClick={() => exportModel(option.format)}
+                    type="button"
+                  >
+                    <Download size={16} />
+                    Export {option.label}
+                  </button>
+                ))}
                 <button
                   className="text-button export-button"
                   onClick={exportWorkJson}

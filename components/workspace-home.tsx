@@ -27,7 +27,13 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_SVG,
 } from "@/lib/defaults";
-import { downloadBlob, exportMedalGlb } from "@/lib/export-model";
+import {
+  MODEL_EXPORT_OPTIONS,
+  downloadBlob,
+  exportMedalModel,
+  getModelExportOption,
+  type ModelExportFormat,
+} from "@/lib/export-model";
 import { waitForIdle } from "@/lib/idle";
 import { generateWorkSnapshot, needsSnapshot } from "@/lib/snapshot";
 import type { SavedWorkSummary, WorkDocument } from "@/lib/types";
@@ -1085,7 +1091,10 @@ export function WorkspaceHome() {
     );
   }
 
-  async function exportWorkGlb(work: SavedWorkSummary) {
+  async function exportWorkModel(
+    work: SavedWorkSummary,
+    format: ModelExportFormat,
+  ) {
     setOpenMenuId(null);
 
     const document = await getWorkDocument(work.id);
@@ -1095,8 +1104,16 @@ export function WorkspaceHome() {
     }
 
     const asset = getPrimarySvgAsset(document);
-    const blob = await exportMedalGlb(asset.text, document.scene.settings);
-    downloadBlob(blob, `${getSafeFileStem(document.document.title)}.glb`);
+    const option = getModelExportOption(format);
+    const blob = await exportMedalModel(
+      asset.text,
+      document.scene.settings,
+      format,
+    );
+    downloadBlob(
+      blob,
+      `${getSafeFileStem(document.document.title)}.${option.extension}`,
+    );
   }
 
   async function deleteWork(work: SavedWorkSummary) {
@@ -1366,9 +1383,15 @@ export function WorkspaceHome() {
               <button onClick={() => downloadWorkJson(openMenuWork)} type="button">
                 Download JSON
               </button>
-              <button onClick={() => exportWorkGlb(openMenuWork)} type="button">
-                Export GLB
-              </button>
+              {MODEL_EXPORT_OPTIONS.map((option) => (
+                <button
+                  key={option.format}
+                  onClick={() => exportWorkModel(openMenuWork, option.format)}
+                  type="button"
+                >
+                  Export {option.label}
+                </button>
+              ))}
               <button onClick={() => renameWork(openMenuWork)} type="button">
                 Rename
               </button>
