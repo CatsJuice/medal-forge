@@ -4,10 +4,12 @@ import {
   BufferAttribute,
   BufferGeometry,
   FrontSide,
+  Group,
   type InterleavedBufferAttribute,
   Mesh,
   type Material,
   type Object3D,
+  Vector3,
 } from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { USDZExporter } from "three/examples/jsm/exporters/USDZExporter.js";
@@ -15,6 +17,26 @@ import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
 import type { MedalSettings } from "@/lib/types";
 
 type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
+type UsdSurfaceKind = "front" | "back" | "side";
+
+interface UsdSurfaceBucket {
+  geometry: BufferGeometry;
+  material: Material;
+  name: string;
+}
+
+interface UsdSurfaceBuildBucket {
+  attributes: Map<string, number[]>;
+  material: Material;
+  name: string;
+}
+
+interface UsdLayer {
+  meshes: Mesh[];
+  currentBottom: number;
+  layerKey: string;
+  order: number;
+}
 
 export type ModelExportFormat = "glb" | "usdz";
 
@@ -114,109 +136,412 @@ async function exportGroupUsdz(group: Object3D): Promise<Blob> {
 
 function makeUsdCompatibleMeshes(group: Object3D) {
   const restorers: Array<() => void> = [];
+  const disposableGeometries: BufferGeometry[] = [];
+  const disposableMaterials = new Set<Material>();
+  const materialClones = new Map<Material, Material>();
+  const meshes: Mesh[] = [];
+
+  group.updateMatrixWorld(true);
 
   group.traverse((object) => {
-    if (!(object instanceof Mesh)) {
-      return;
-    }
-
-    const material = object.material;
-
-    if (!material) {
-      return;
-    }
-
-    const materials = Array.isArray(material) ? material : [material];
-    const needsBakedDoubleSidedGeometry = materials.some(
-      (item) => item.side !== FrontSide,
-    );
-
-    if (needsBakedDoubleSidedGeometry) {
-      const originalGeometry = object.geometry;
-      const doubleSidedGeometry = createDoubleSidedGeometry(originalGeometry);
-
-      object.geometry = doubleSidedGeometry;
-      restorers.push(() => {
-        object.geometry = originalGeometry;
-        doubleSidedGeometry.dispose();
-      });
-    }
-
-    for (const item of materials) {
-      const originalSide = item.side;
-
-      if (originalSide === FrontSide) {
-        continue;
-      }
-
-      item.side = FrontSide;
-      item.needsUpdate = true;
-      restorers.push(() => {
-        item.side = originalSide;
-        item.needsUpdate = true;
-      });
+    if (object instanceof Mesh) {
+      meshes.push(object);
     }
   });
 
+  const includeBackByMesh = createUsdBackfaceInclusion(meshes);
+
+  for (const mesh of meshes) {
+    if (!mesh.visible || !mesh.parent) {
+      continue;
+    }
+
+    const surfaceBuckets = createUsdSurfaceBuckets(
+      mesh,
+      includeBackByMesh.get(mesh) ?? true,
+      (material) => {
+        const existing = materialClones.get(material);
+
+        if (existing) {
+          return existing;
+        }
+
+        const clone = material.clone();
+        clone.side = FrontSide;
+        clone.needsUpdate = true;
+        materialClones.set(material, clone);
+        disposableMaterials.add(clone);
+
+        return clone;
+      },
+    );
+
+    if (surfaceBuckets.length === 0) {
+      continue;
+    }
+
+    mesh.updateMatrix();
+
+    const originalVisible = mesh.visible;
+    const surfaceGroup = new Group();
+    surfaceGroup.name = `${mesh.name || "mesh"} USDZ surfaces`;
+    surfaceGroup.matrix.copy(mesh.matrix);
+    surfaceGroup.matrixAutoUpdate = false;
+
+    for (const bucket of surfaceBuckets) {
+      const surfaceMesh = new Mesh(bucket.geometry, bucket.material);
+      surfaceMesh.name = bucket.name;
+      surfaceMesh.castShadow = mesh.castShadow;
+      surfaceMesh.receiveShadow = mesh.receiveShadow;
+      surfaceMesh.renderOrder = mesh.renderOrder;
+      surfaceMesh.userData = { ...mesh.userData };
+      surfaceGroup.add(surfaceMesh);
+      disposableGeometries.push(bucket.geometry);
+    }
+
+    mesh.visible = false;
+    mesh.parent.add(surfaceGroup);
+
+    restorers.push(() => {
+      mesh.visible = originalVisible;
+      surfaceGroup.removeFromParent();
+    });
+  }
+
+  group.updateMatrixWorld(true);
+
   return () => {
-    for (const restore of restorers) {
-      restore();
+    for (let index = restorers.length - 1; index >= 0; index -= 1) {
+      restorers[index]();
+    }
+
+    for (const geometry of disposableGeometries) {
+      geometry.dispose();
+    }
+
+    for (const material of disposableMaterials) {
+      material.dispose();
     }
   };
 }
 
-function createDoubleSidedGeometry(geometry: BufferGeometry) {
-  const source = geometry.index ? geometry.toNonIndexed() : geometry.clone();
-  const result = new BufferGeometry();
-  const vertexCount = source.getAttribute("position").count;
+function createUsdBackfaceInclusion(meshes: Mesh[]) {
+  const layerMap = new Map<string, UsdLayer>();
+  const includeBackByMesh = new Map<Mesh, boolean>();
+
+  meshes.forEach((mesh, index) => {
+    if (!mesh.visible || !mesh.parent) {
+      return;
+    }
+
+    mesh.updateMatrix();
+
+    const bounds = getGeometryZBounds(mesh.geometry);
+    const positionZ = mesh.matrix.elements[14];
+    const layerKey = getMeshLayerKey(mesh, index);
+    const currentBottom = positionZ + bounds.min;
+    const existing = layerMap.get(layerKey);
+
+    if (existing) {
+      existing.meshes.push(mesh);
+      existing.currentBottom = Math.min(existing.currentBottom, currentBottom);
+      return;
+    }
+
+    layerMap.set(layerKey, {
+      meshes: [mesh],
+      currentBottom,
+      layerKey,
+      order: getMeshLayerOrder(mesh, index),
+    });
+  });
+
+  const layers = Array.from(layerMap.values()).sort(
+    (left, right) =>
+      left.currentBottom - right.currentBottom ||
+      left.order - right.order ||
+      left.layerKey.localeCompare(right.layerKey),
+  );
+
+  layers.forEach((layer, layerIndex) => {
+    layer.meshes.forEach((mesh) => {
+      includeBackByMesh.set(mesh, layerIndex === 0);
+    });
+  });
+
+  return includeBackByMesh;
+}
+
+function getMeshLayerKey(mesh: Mesh, index: number) {
+  const pathIndex = mesh.userData.pathIndex;
+
+  return Number.isFinite(pathIndex) ? `path:${pathIndex}` : `mesh:${index}`;
+}
+
+function getMeshLayerOrder(mesh: Mesh, index: number) {
+  const pathIndex = mesh.userData.pathIndex;
+
+  return Number.isFinite(pathIndex) ? Number(pathIndex) : index;
+}
+
+function getGeometryZBounds(geometry: BufferGeometry) {
+  if (!geometry.boundingBox) {
+    geometry.computeBoundingBox();
+  }
+
+  return {
+    min: geometry.boundingBox?.min.z ?? 0,
+    max: geometry.boundingBox?.max.z ?? 0,
+  };
+}
+
+function createUsdSurfaceBuckets(
+  mesh: Mesh,
+  includeBack: boolean,
+  getUsdMaterial: (material: Material) => Material,
+): UsdSurfaceBucket[] {
+  const source = mesh.geometry.index
+    ? mesh.geometry.toNonIndexed()
+    : mesh.geometry.clone();
+
+  if (!source.getAttribute("normal")) {
+    source.computeVertexNormals();
+  }
+
+  const position = source.getAttribute("position");
+  const normal = source.getAttribute("normal");
+  const buckets = new Map<string, UsdSurfaceBuildBucket>();
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const zBounds = getGeometryZBounds(source);
+
+  for (let triangle = 0; triangle < position.count; triangle += 3) {
+    const materialIndex = getTriangleMaterialIndex(source, triangle);
+    const sourceMaterial = materials[materialIndex] ?? materials[0];
+
+    if (!sourceMaterial) {
+      continue;
+    }
+
+    const surface = classifyTriangleSurface(
+      position,
+      normal,
+      triangle,
+      materialIndex,
+      zBounds,
+    );
+
+    if (surface === "back" && !includeBack) {
+      continue;
+    }
+
+    const bucket = getSurfaceBuildBucket(
+      buckets,
+      `${surface}:${sourceMaterial.uuid}`,
+      `${mesh.name || "mesh"} ${surface}`,
+      getUsdMaterial(sourceMaterial),
+    );
+
+    appendTriangleToBucket(bucket, source, triangle, false);
+
+    if (surface === "side") {
+      appendTriangleToBucket(bucket, source, triangle, true);
+    }
+  }
+
+  const surfaceBuckets = Array.from(buckets.values()).map((bucket) => ({
+    geometry: createGeometryFromBucket(bucket, source),
+    material: bucket.material,
+    name: bucket.name,
+  }));
+
+  source.dispose();
+
+  return surfaceBuckets;
+}
+
+function getTriangleMaterialIndex(geometry: BufferGeometry, triangle: number) {
+  for (const group of geometry.groups) {
+    if (triangle >= group.start && triangle < group.start + group.count) {
+      return group.materialIndex ?? 0;
+    }
+  }
+
+  return 0;
+}
+
+function classifyTriangleSurface(
+  position: GeometryAttribute,
+  normal: GeometryAttribute,
+  triangle: number,
+  materialIndex: number,
+  zBounds: { min: number; max: number },
+): UsdSurfaceKind {
+  if (materialIndex > 0) {
+    return "side";
+  }
+
+  const z0 = position.getComponent(triangle, 2);
+  const z1 = position.getComponent(triangle + 1, 2);
+  const z2 = position.getComponent(triangle + 2, 2);
+  const triangleDepth = Math.max(z0, z1, z2) - Math.min(z0, z1, z2);
+
+  if (triangleDepth < 0.0001) {
+    const averageZ = (z0 + z1 + z2) / 3;
+    const centerZ = (zBounds.min + zBounds.max) / 2;
+
+    return averageZ >= centerZ ? "front" : "back";
+  }
+
+  const averageNormal = getAverageNormal(normal, triangle);
+
+  if (Math.abs(averageNormal.z) < 0.92) {
+    return "side";
+  }
+
+  if (Math.abs(averageNormal.z) >= 0.45) {
+    return averageNormal.z >= 0 ? "front" : "back";
+  }
+
+  return "side";
+}
+
+function getAverageNormal(normal: GeometryAttribute, triangle: number) {
+  return new Vector3(
+    normal.getComponent(triangle, 0) +
+      normal.getComponent(triangle + 1, 0) +
+      normal.getComponent(triangle + 2, 0),
+    normal.getComponent(triangle, 1) +
+      normal.getComponent(triangle + 1, 1) +
+      normal.getComponent(triangle + 2, 1),
+    normal.getComponent(triangle, 2) +
+      normal.getComponent(triangle + 1, 2) +
+      normal.getComponent(triangle + 2, 2),
+  ).normalize();
+}
+
+function getSurfaceBuildBucket(
+  buckets: Map<string, UsdSurfaceBuildBucket>,
+  key: string,
+  name: string,
+  material: Material,
+) {
+  const existing = buckets.get(key);
+
+  if (existing) {
+    return existing;
+  }
+
+  const bucket = {
+    attributes: new Map<string, number[]>(),
+    material,
+    name,
+  };
+  buckets.set(key, bucket);
+
+  return bucket;
+}
+
+function appendTriangleToBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+  triangle: number,
+  reversed: boolean,
+) {
+  const order = getTriangleOrder(source, triangle, reversed);
+  const normalMultiplier = reversed ? -1 : 1;
 
   for (const name of Object.keys(source.attributes)) {
     const attribute = source.getAttribute(name);
-    const itemSize = attribute.itemSize;
-    const array = new (attribute.array.constructor as {
-      new (length: number): typeof attribute.array;
-    })(vertexCount * itemSize * 2);
+    let target = bucket.attributes.get(name);
 
-    for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-      copyAttributeItem(attribute, array, vertex, vertex, 1);
+    if (!target) {
+      target = [];
+      bucket.attributes.set(name, target);
     }
 
-    for (let triangle = 0; triangle < vertexCount; triangle += 3) {
-      for (let corner = 0; corner < 3; corner += 1) {
-        const sourceVertex = triangle + (2 - corner);
-        const targetVertex = vertexCount + triangle + corner;
-        const multiplier = name === "normal" ? -1 : 1;
+    for (const vertex of order) {
+      appendAttributeItem(
+        attribute,
+        target,
+        vertex,
+        name === "normal" ? normalMultiplier : 1,
+      );
+    }
+  }
+}
 
-        copyAttributeItem(attribute, array, targetVertex, sourceVertex, multiplier);
-      }
+function getTriangleOrder(
+  geometry: BufferGeometry,
+  triangle: number,
+  reversed: boolean,
+) {
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  const faceNormal = getFaceNormal(position, triangle);
+  const averageNormal = getAverageNormal(normal, triangle);
+  const forwardOrder =
+    faceNormal.dot(averageNormal) >= 0
+      ? [triangle, triangle + 1, triangle + 2]
+      : [triangle, triangle + 2, triangle + 1];
+
+  return reversed ? [...forwardOrder].reverse() : forwardOrder;
+}
+
+function getFaceNormal(position: GeometryAttribute, triangle: number) {
+  const a = getPosition(position, triangle);
+  const b = getPosition(position, triangle + 1);
+  const c = getPosition(position, triangle + 2);
+
+  return b.sub(a).cross(c.sub(a)).normalize();
+}
+
+function getPosition(position: GeometryAttribute, vertex: number) {
+  return new Vector3(
+    position.getComponent(vertex, 0),
+    position.getComponent(vertex, 1),
+    position.getComponent(vertex, 2),
+  );
+}
+
+function createGeometryFromBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+) {
+  const geometry = new BufferGeometry();
+
+  for (const name of Object.keys(source.attributes)) {
+    const values = bucket.attributes.get(name);
+
+    if (!values) {
+      continue;
     }
 
-    result.setAttribute(
+    const sourceAttribute = source.getAttribute(name);
+    geometry.setAttribute(
       name,
-      new BufferAttribute(array, itemSize, attribute.normalized),
+      new BufferAttribute(
+        new Float32Array(values),
+        sourceAttribute.itemSize,
+        sourceAttribute.normalized,
+      ),
     );
   }
 
-  result.name = geometry.name;
-  result.computeBoundingBox();
-  result.computeBoundingSphere();
-  source.dispose();
+  geometry.name = bucket.name;
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
 
-  return result;
+  return geometry;
 }
 
-function copyAttributeItem(
+function appendAttributeItem(
   attribute: GeometryAttribute,
-  targetArray: BufferAttribute["array"],
-  targetVertex: number,
+  target: number[],
   sourceVertex: number,
   multiplier: number,
 ) {
-  const targetOffset = targetVertex * attribute.itemSize;
-
   for (let itemIndex = 0; itemIndex < attribute.itemSize; itemIndex += 1) {
-    targetArray[targetOffset + itemIndex] =
-      attribute.getComponent(sourceVertex, itemIndex) * multiplier;
+    target.push(attribute.getComponent(sourceVertex, itemIndex) * multiplier);
   }
 }
 
