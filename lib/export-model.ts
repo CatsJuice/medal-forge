@@ -342,6 +342,10 @@ function createUsdSurfaceBuckets(
     );
 
     appendTriangleToBucket(bucket, source, triangle, surface, false);
+
+    if (surface === "side") {
+      appendTriangleToBucket(bucket, source, triangle, surface, true);
+    }
   }
 
   const surfaceBuckets = Array.from(buckets.values()).map((bucket) => ({
