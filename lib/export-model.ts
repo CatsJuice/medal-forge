@@ -341,10 +341,10 @@ function createUsdSurfaceBuckets(
       getUsdMaterial(sourceMaterial),
     );
 
-    appendTriangleToBucket(bucket, source, triangle, false);
+    appendTriangleToBucket(bucket, source, triangle, surface, false);
 
     if (surface === "side") {
-      appendTriangleToBucket(bucket, source, triangle, true);
+      appendTriangleToBucket(bucket, source, triangle, surface, true);
     }
   }
 
@@ -445,10 +445,15 @@ function appendTriangleToBucket(
   bucket: UsdSurfaceBuildBucket,
   source: BufferGeometry,
   triangle: number,
+  surface: UsdSurfaceKind,
   reversed: boolean,
 ) {
-  const order = getTriangleOrder(source, triangle, reversed);
-  const normalMultiplier = reversed ? -1 : 1;
+  const { normalMultiplier, order } = getTriangleExportOrientation(
+    source,
+    triangle,
+    surface,
+    reversed,
+  );
 
   for (const name of Object.keys(source.attributes)) {
     const attribute = source.getAttribute(name);
@@ -470,11 +475,16 @@ function appendTriangleToBucket(
   }
 }
 
-function getTriangleOrder(
+function getTriangleExportOrientation(
   geometry: BufferGeometry,
   triangle: number,
+  surface: UsdSurfaceKind,
   reversed: boolean,
 ) {
+  if (surface === "front" || surface === "back") {
+    return getCapTriangleExportOrientation(geometry, triangle, surface);
+  }
+
   const position = geometry.getAttribute("position");
   const normal = geometry.getAttribute("normal");
   const faceNormal = getFaceNormal(position, triangle);
@@ -484,7 +494,31 @@ function getTriangleOrder(
       ? [triangle, triangle + 1, triangle + 2]
       : [triangle, triangle + 2, triangle + 1];
 
-  return reversed ? [...forwardOrder].reverse() : forwardOrder;
+  return {
+    normalMultiplier: reversed ? -1 : 1,
+    order: reversed ? [...forwardOrder].reverse() : forwardOrder,
+  };
+}
+
+function getCapTriangleExportOrientation(
+  geometry: BufferGeometry,
+  triangle: number,
+  surface: Exclude<UsdSurfaceKind, "side">,
+) {
+  const position = geometry.getAttribute("position");
+  const normal = geometry.getAttribute("normal");
+  const desiredNormalZ = surface === "front" ? 1 : -1;
+  const faceNormal = getFaceNormal(position, triangle);
+  const averageNormal = getAverageNormal(normal, triangle);
+  const shouldReverseOrder = faceNormal.z * desiredNormalZ < 0;
+  const shouldFlipNormal = averageNormal.z * desiredNormalZ < 0;
+
+  return {
+    normalMultiplier: shouldFlipNormal ? -1 : 1,
+    order: shouldReverseOrder
+      ? [triangle, triangle + 2, triangle + 1]
+      : [triangle, triangle + 1, triangle + 2],
+  };
 }
 
 function getFaceNormal(position: GeometryAttribute, triangle: number) {
