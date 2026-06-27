@@ -26,9 +26,10 @@ type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
 type UsdSurfaceKind = "front" | "back" | "side";
 type UsdZipEntry = Uint8Array | [Uint8Array, { extra: Record<number, Uint8Array> }];
 
-const USD_GEOMETRY_FLOAT_PRECISION = 5;
+const USD_GEOMETRY_FLOAT_PRECISION = 4;
 const USDA_FLOAT_PATTERN =
   /(^|[^\w.])([-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\d+e[-+]?\d+)/gi;
+const USDA_COMMA_WHITESPACE_PATTERN = /,\s+/g;
 
 interface UsdSurfaceBucket {
   geometry: BufferGeometry;
@@ -158,7 +159,7 @@ function optimizeUsdGeometryPrecision(result: ArrayBuffer | Uint8Array) {
     }
 
     const text = strFromU8(data);
-    const optimizedText = quantizeUsdaFloatText(text);
+    const optimizedText = optimizeUsdaGeometryText(text);
 
     if (optimizedText === text) {
       continue;
@@ -173,6 +174,10 @@ function optimizeUsdGeometryPrecision(result: ArrayBuffer | Uint8Array) {
   }
 
   return getArrayBuffer(zipUsdFiles(files));
+}
+
+function optimizeUsdaGeometryText(text: string) {
+  return quantizeUsdaFloatText(text).replace(USDA_COMMA_WHITESPACE_PATTERN, ",");
 }
 
 function quantizeUsdaFloatText(text: string) {
