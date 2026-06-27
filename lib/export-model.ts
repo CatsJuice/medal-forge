@@ -1,10 +1,20 @@
 "use client";
 
-import { FrontSide, type Material, type Object3D } from "three";
+import {
+  BufferAttribute,
+  BufferGeometry,
+  FrontSide,
+  type InterleavedBufferAttribute,
+  Mesh,
+  type Material,
+  type Object3D,
+} from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { USDZExporter } from "three/examples/jsm/exporters/USDZExporter.js";
 import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
 import type { MedalSettings } from "@/lib/types";
+
+type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
 
 export type ModelExportFormat = "glb" | "usdz";
 
@@ -89,7 +99,7 @@ async function exportGroupGlb(group: Object3D): Promise<Blob> {
 
 async function exportGroupUsdz(group: Object3D): Promise<Blob> {
   const exporter = new USDZExporter();
-  const restoreMaterials = makeUsdCompatibleMaterials(group);
+  const restoreForUsd = makeUsdCompatibleMeshes(group);
 
   try {
     const result = await exporter.parseAsync(group);
@@ -98,21 +108,40 @@ async function exportGroupUsdz(group: Object3D): Promise<Blob> {
       type: getModelExportOption("usdz").mimeType,
     });
   } finally {
-    restoreMaterials();
+    restoreForUsd();
   }
 }
 
-function makeUsdCompatibleMaterials(group: Object3D) {
+function makeUsdCompatibleMeshes(group: Object3D) {
   const restorers: Array<() => void> = [];
 
   group.traverse((object) => {
-    const material = (object as { material?: Material | Material[] }).material;
+    if (!(object instanceof Mesh)) {
+      return;
+    }
+
+    const material = object.material;
 
     if (!material) {
       return;
     }
 
     const materials = Array.isArray(material) ? material : [material];
+    const needsBakedDoubleSidedGeometry = materials.some(
+      (item) => item.side !== FrontSide,
+    );
+
+    if (needsBakedDoubleSidedGeometry) {
+      const originalGeometry = object.geometry;
+      const doubleSidedGeometry = createDoubleSidedGeometry(originalGeometry);
+
+      object.geometry = doubleSidedGeometry;
+      restorers.push(() => {
+        object.geometry = originalGeometry;
+        doubleSidedGeometry.dispose();
+      });
+    }
+
     for (const item of materials) {
       const originalSide = item.side;
 
@@ -134,6 +163,61 @@ function makeUsdCompatibleMaterials(group: Object3D) {
       restore();
     }
   };
+}
+
+function createDoubleSidedGeometry(geometry: BufferGeometry) {
+  const source = geometry.index ? geometry.toNonIndexed() : geometry.clone();
+  const result = new BufferGeometry();
+  const vertexCount = source.getAttribute("position").count;
+
+  for (const name of Object.keys(source.attributes)) {
+    const attribute = source.getAttribute(name);
+    const itemSize = attribute.itemSize;
+    const array = new (attribute.array.constructor as {
+      new (length: number): typeof attribute.array;
+    })(vertexCount * itemSize * 2);
+
+    for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+      copyAttributeItem(attribute, array, vertex, vertex, 1);
+    }
+
+    for (let triangle = 0; triangle < vertexCount; triangle += 3) {
+      for (let corner = 0; corner < 3; corner += 1) {
+        const sourceVertex = triangle + (2 - corner);
+        const targetVertex = vertexCount + triangle + corner;
+        const multiplier = name === "normal" ? -1 : 1;
+
+        copyAttributeItem(attribute, array, targetVertex, sourceVertex, multiplier);
+      }
+    }
+
+    result.setAttribute(
+      name,
+      new BufferAttribute(array, itemSize, attribute.normalized),
+    );
+  }
+
+  result.name = geometry.name;
+  result.computeBoundingBox();
+  result.computeBoundingSphere();
+  source.dispose();
+
+  return result;
+}
+
+function copyAttributeItem(
+  attribute: GeometryAttribute,
+  targetArray: BufferAttribute["array"],
+  targetVertex: number,
+  sourceVertex: number,
+  multiplier: number,
+) {
+  const targetOffset = targetVertex * attribute.itemSize;
+
+  for (let itemIndex = 0; itemIndex < attribute.itemSize; itemIndex += 1) {
+    targetArray[targetOffset + itemIndex] =
+      attribute.getComponent(sourceVertex, itemIndex) * multiplier;
+  }
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
