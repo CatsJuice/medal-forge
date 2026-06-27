@@ -138,12 +138,38 @@ async function exportGroupUsdz(group: Object3D): Promise<Blob> {
   try {
     const result = await exporter.parseAsync(group);
     const optimizedResult = optimizeUsdGeometryPrecision(result);
+    const binaryOptimizedResult =
+      await optimizeUsdGeometryWithServer(optimizedResult);
 
-    return new Blob([optimizedResult], {
+    return new Blob([binaryOptimizedResult], {
       type: getModelExportOption("usdz").mimeType,
     });
   } finally {
     restoreForUsd();
+  }
+}
+
+async function optimizeUsdGeometryWithServer(result: ArrayBuffer) {
+  try {
+    const response = await fetch("/api/usdz-optimize", {
+      body: result,
+      headers: {
+        "Content-Type": getModelExportOption("usdz").mimeType,
+      },
+      method: "POST",
+    });
+
+    if (!response.ok) {
+      return result;
+    }
+
+    const optimizedResult = await response.arrayBuffer();
+
+    return optimizedResult.byteLength < result.byteLength
+      ? optimizedResult
+      : result;
+  } catch {
+    return result;
   }
 }
 
