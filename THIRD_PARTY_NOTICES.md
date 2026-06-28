@@ -3,12 +3,10 @@
 Medal Forge is licensed under the MIT License. Some optional runtime features load
 third-party components with their own licenses.
 
-## Presentation MOV export
+## Presentation MOV Export
 
-The ProRes MOV presentation export lazy-loads FFmpeg WebAssembly core assets
-through a same-origin proxy backed by the pinned public npm CDN URL:
+The ProRes MOV presentation export uses `prores-wasm-encoder` to encode
+transparent ProRes 4444 files locally in the browser.
 
-`https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm/`
-
-The `@ffmpeg/core` package is licensed as GPL-2.0-or-later. It is not committed
-to this repository; it is fetched only when the MOV presentation export is used.
+`prores-wasm-encoder` is licensed under the MIT License and is installed from
+npm.

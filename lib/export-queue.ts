@@ -56,6 +56,7 @@ interface EnqueuePresentationExportOptions {
   config: PresentationExportConfig;
   fileName: string;
   format: PresentationExportFormat;
+  saveHandle?: ExportSaveFileHandle;
   settings: MedalSettings;
   svgText: string;
 }
@@ -88,6 +89,15 @@ interface CompletedExportDownload {
   fileName: string;
 }
 
+export interface ExportWritableFileStream {
+  close: () => Promise<void>;
+  write: (data: Blob) => Promise<void>;
+}
+
+export interface ExportSaveFileHandle {
+  createWritable: () => Promise<ExportWritableFileStream>;
+}
+
 const MAX_FINISHED_ITEMS = 6;
 
 const subscribers = new Set<() => void>();
@@ -98,6 +108,7 @@ let snapshot: ExportQueueSnapshot = {
 let worker: Worker | null = null;
 const pendingPayloads = new Map<string, PendingExportPayload>();
 const completedDownloads = new Map<string, CompletedExportDownload>();
+const saveHandles = new Map<string, ExportSaveFileHandle>();
 
 function emitChange() {
   for (const subscriber of subscribers) {
@@ -186,6 +197,7 @@ function releaseResourcesForRemovedItems(
 function releaseExportResources(id: string) {
   pendingPayloads.delete(id);
   completedDownloads.delete(id);
+  saveHandles.delete(id);
 }
 
 function startNextExport() {
@@ -261,7 +273,12 @@ function handleWorkerMessage(message: ExportWorkerMessage) {
     return;
   }
 
-  completeWithResult(message.id, message.buffer, message.mimeType, message.sizeBytes);
+  void completeWithResult(
+    message.id,
+    message.buffer,
+    message.mimeType,
+    message.sizeBytes,
+  );
 }
 
 function applyProgress(id: string, progress: ExportProgressUpdate) {
@@ -272,7 +289,7 @@ function applyProgress(id: string, progress: ExportProgressUpdate) {
   }));
 }
 
-function completeWithResult(
+async function completeWithResult(
   id: string,
   buffer: ArrayBuffer,
   mimeType: string,
@@ -280,16 +297,30 @@ function completeWithResult(
 ) {
   const item = snapshot.items.find((candidate) => candidate.id === id);
   const blob = new Blob([buffer], { type: mimeType });
+  let statusText = "Downloaded";
 
   if (item) {
     completedDownloads.set(id, {
       blob,
       fileName: item.fileName,
     });
-    downloadBlob(blob, item.fileName);
+
+    const saveHandle = saveHandles.get(id);
+
+    if (saveHandle) {
+      try {
+        await writeBlobToSaveHandle(saveHandle, blob);
+        statusText = "Saved";
+      } catch {
+        downloadBlob(blob, item.fileName);
+      }
+    } else {
+      downloadBlob(blob, item.fileName);
+    }
   }
 
   pendingPayloads.delete(id);
+  saveHandles.delete(id);
   setSnapshot((current) => ({
     activeId: current.activeId === id ? null : current.activeId,
     items: trimFinishedItems(
@@ -301,13 +332,26 @@ function completeWithResult(
               progress: 100,
               sizeBytes,
               status: "completed",
-              statusText: "Downloaded",
+              statusText,
             }
           : candidate,
       ),
     ),
   }));
   startNextExport();
+}
+
+async function writeBlobToSaveHandle(
+  saveHandle: ExportSaveFileHandle,
+  blob: Blob,
+) {
+  const writable = await saveHandle.createWritable();
+
+  try {
+    await writable.write(blob);
+  } finally {
+    await writable.close();
+  }
 }
 
 function completeWithError(id: string, error: string) {
@@ -420,6 +464,7 @@ export function enqueuePresentationExport({
   config,
   fileName,
   format,
+  saveHandle,
   settings,
   svgText,
 }: EnqueuePresentationExportOptions) {
@@ -435,6 +480,10 @@ export function enqueuePresentationExport({
     settings: cloneSettings(settings),
     svgText,
   });
+
+  if (saveHandle) {
+    saveHandles.set(id, saveHandle);
+  }
 
   setSnapshot((current) => ({
     ...current,

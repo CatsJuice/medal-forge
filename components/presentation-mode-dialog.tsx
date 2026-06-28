@@ -40,7 +40,10 @@ import {
   type PresentationMode,
   type PresentationSpinSpeeds,
 } from "@/lib/presentation-export";
-import { enqueuePresentationExport } from "@/lib/export-queue";
+import {
+  enqueuePresentationExport,
+  type ExportSaveFileHandle,
+} from "@/lib/export-queue";
 import type { MedalSettings } from "@/lib/types";
 
 interface PresentationModeDialogProps {
@@ -50,6 +53,16 @@ interface PresentationModeDialogProps {
   onStatus: (status: string) => void;
   settings: MedalSettings;
   svgText: string;
+}
+
+interface PresentationSavePickerWindow extends Window {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: Array<{
+      accept: Record<string, string[]>;
+      description: string;
+    }>;
+  }) => Promise<ExportSaveFileHandle>;
 }
 
 interface NumberFieldProps {
@@ -367,16 +380,28 @@ export function PresentationModeDialog({
     );
   }
 
-  function queueExport() {
+  async function queueExport() {
     if (disabled) {
       onStatus("Finish loading SVG before exporting");
       return;
     }
 
+    const fileName = `${fileStem}-presentation-${mode}.${formatOption.extension}`;
+    const saveHandle =
+      format === "mov"
+        ? await requestMovSaveHandle(fileName, formatOption.mimeType)
+        : undefined;
+
+    if (saveHandle === null) {
+      onStatus("MOV export canceled");
+      return;
+    }
+
     enqueuePresentationExport({
       config,
-      fileName: `${fileStem}-presentation-${mode}.${formatOption.extension}`,
+      fileName,
       format,
+      saveHandle,
       settings,
       svgText,
     });
@@ -587,4 +612,41 @@ export function PresentationModeDialog({
       </div>
     </section>
   );
+}
+
+async function requestMovSaveHandle(fileName: string, mimeType: string) {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  if (navigator.webdriver) {
+    return undefined;
+  }
+
+  const showSaveFilePicker = (window as PresentationSavePickerWindow)
+    .showSaveFilePicker;
+
+  if (!showSaveFilePicker) {
+    return undefined;
+  }
+
+  try {
+    return await showSaveFilePicker({
+      suggestedName: fileName,
+      types: [
+        {
+          accept: {
+            [mimeType]: [".mov"],
+          },
+          description: "ProRes MOV",
+        },
+      ],
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return null;
+    }
+
+    return undefined;
+  }
 }

@@ -80,9 +80,25 @@ interface RenderContext {
   width: number;
 }
 
-type PresentationFfmpeg = InstanceType<
-  (typeof import("@ffmpeg/ffmpeg"))["FFmpeg"]
->;
+interface PresentationProResEncoder {
+  addFrameFromImageData: (imageData: ImageData) => void;
+  destroy: () => void;
+  finalize: () => Uint8Array;
+  initialize: (options: {
+    frameRate: number;
+    height: number;
+    profile: number;
+    range: "limited";
+    width: number;
+  }) => void;
+}
+
+interface PresentationProResModule {
+  ProResProfile: {
+    P4444: number;
+  };
+  createProResEncoder: () => Promise<PresentationProResEncoder>;
+}
 
 const GIF_TRANSPARENT_INDEX = 0;
 const GIF_PALETTE_SIZE = 256;
@@ -93,9 +109,10 @@ const DEFAULT_EXPORT_DURATION_SECONDS = 5;
 const MIN_EXPORT_DURATION_SECONDS = 1;
 const MAX_EXPORT_DURATION_SECONDS = 12;
 const MIN_FLIP_SPEED_DEG_PER_SECOND = 30;
-const FFMPEG_CORE_BASE_PATH = "/api/ffmpeg-core";
 
-let presentationFfmpegPromise: Promise<PresentationFfmpeg> | null = null;
+let presentationProResModulePromise:
+  | Promise<PresentationProResModule>
+  | null = null;
 
 interface GifPaletteColor {
   blue: number;
@@ -439,31 +456,29 @@ function disposeRenderContext(context: RenderContext) {
   context.renderer.dispose();
 }
 
-async function loadPresentationFfmpeg(options: PresentationExportOptions) {
-  if (!presentationFfmpegPromise) {
-    presentationFfmpegPromise = (async () => {
+async function loadPresentationProResEncoder(
+  options: PresentationExportOptions,
+) {
+  if (!presentationProResModulePromise) {
+    presentationProResModulePromise = (async () => {
       reportExportProgress(
         options,
         0.04,
         "building",
         "Loading ProRes MOV encoder",
       );
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const ffmpeg = new FFmpeg();
-      await ffmpeg.load({
-        classWorkerURL: getSameOriginUrl("/ffmpeg/worker.js"),
-        coreURL: getSameOriginUrl(`${FFMPEG_CORE_BASE_PATH}/ffmpeg-core.js`),
-        wasmURL: getSameOriginUrl(`${FFMPEG_CORE_BASE_PATH}/ffmpeg-core.wasm`),
-      });
-
-      return ffmpeg;
+      return (await import(
+        /* webpackIgnore: true */ getSameOriginUrl(
+          "/vendor/prores-encoder.esm.js",
+        )
+      )) as PresentationProResModule;
     })().catch((error) => {
-      presentationFfmpegPromise = null;
+      presentationProResModulePromise = null;
       throw error;
     });
   }
 
-  return presentationFfmpegPromise;
+  return presentationProResModulePromise;
 }
 
 function getSameOriginUrl(pathname: string) {
@@ -474,28 +489,6 @@ function getSameOriginUrl(pathname: string) {
   return pathname;
 }
 
-async function encodePngFrame(canvas: OffscreenCanvas) {
-  if (!canvas.convertToBlob) {
-    throw new Error("MOV export requires OffscreenCanvas PNG encoding support");
-  }
-
-  const blob = await canvas.convertToBlob({ type: "image/png" });
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-async function cleanupFfmpegFiles(
-  ffmpeg: PresentationFfmpeg,
-  filePaths: string[],
-  workDir: string,
-) {
-  await Promise.all(
-    filePaths.map((filePath) =>
-      ffmpeg.deleteFile(filePath).catch(() => undefined),
-    ),
-  );
-  await ffmpeg.deleteDir(workDir).catch(() => undefined);
-}
-
 async function exportMov(
   context: RenderContext,
   config: PresentationExportConfig,
@@ -503,89 +496,44 @@ async function exportMov(
   fps: number,
   options: PresentationExportOptions,
 ) {
-  const ffmpeg = await loadPresentationFfmpeg(options);
-  const workDir = `/presentation-${Date.now().toString(36)}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
-  const outputPath = `${workDir}/presentation.mov`;
-  const framePaths: string[] = [];
-  const progressHandler = ({ progress }: { progress: number }) => {
-    if (Number.isFinite(progress) && progress >= 0) {
-      reportExportProgress(
-        options,
-        0.62 + clampNumber(progress, 0, 1) * 0.32,
-        "encoding",
-        "Encoding ProRes MOV",
-      );
-    }
-  };
+  const { createProResEncoder, ProResProfile } =
+    await loadPresentationProResEncoder(options);
+  const encoder = await createProResEncoder();
 
   try {
-    await ffmpeg.createDir(workDir);
+    encoder.initialize({
+      frameRate: fps,
+      height: context.height,
+      profile: ProResProfile.P4444,
+      range: "limited",
+      width: context.width,
+    });
 
     for (let index = 0; index < frameCount; index += 1) {
       renderPresentationFrame(context, config, index / fps);
-      const framePath = `${workDir}/frame-${index
-        .toString()
-        .padStart(5, "0")}.png`;
-      const frameBytes = await encodePngFrame(context.readCanvas);
-      await ffmpeg.writeFile(framePath, frameBytes);
-      framePaths.push(framePath);
+      encoder.addFrameFromImageData(
+        context.readContext.getImageData(0, 0, context.width, context.height),
+      );
       reportFrameProgress(
         options,
         index,
         frameCount,
         0.08,
-        0.58,
+        0.94,
         "rendering",
-        "Rendering MOV frames",
+        "Encoding ProRes MOV",
       );
     }
 
-    reportExportProgress(options, 0.62, "encoding", "Encoding ProRes MOV");
-    ffmpeg.on("progress", progressHandler);
-    const exitCode = await ffmpeg.exec([
-      "-framerate",
-      String(fps),
-      "-start_number",
-      "0",
-      "-i",
-      `${workDir}/frame-%05d.png`,
-      "-frames:v",
-      String(frameCount),
-      "-an",
-      "-c:v",
-      "prores_ks",
-      "-profile:v",
-      "4444",
-      "-pix_fmt",
-      "yuva444p10le",
-      "-alpha_bits",
-      "16",
-      "-movflags",
-      "faststart",
-      outputPath,
-    ]);
-    ffmpeg.off("progress", progressHandler);
-
-    if (exitCode !== 0) {
-      throw new Error("ProRes MOV encoding failed");
-    }
-
-    const movie = await ffmpeg.readFile(outputPath);
-
-    if (!(movie instanceof Uint8Array)) {
-      throw new Error("ProRes MOV encoder returned invalid data");
-    }
-
+    reportExportProgress(options, 0.96, "encoding", "Writing ProRes MOV");
+    const movie = encoder.finalize();
     reportExportProgress(options, 0.98, "done", "Preparing download");
 
     return new Blob([toBlobPart(movie)], {
       type: getPresentationExportOption("mov").mimeType,
     });
   } finally {
-    ffmpeg.off("progress", progressHandler);
-    await cleanupFfmpegFiles(ffmpeg, [...framePaths, outputPath], workDir);
+    encoder.destroy();
   }
 }
 
