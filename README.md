@@ -12,6 +12,9 @@ A focused Next.js prototype for turning uploaded SVG files into simple 3D medal,
 - Adjust per-shape thickness, bevel, material, color, precision, visibility, and front/back height offset.
 - Reset selected colors back to the original SVG color.
 - Export GLB and USDZ models and copy a React/Three code snippet.
+- Export transparent presentation animations as GIF or ProRes MOV. MOV export
+  lazy-loads FFmpeg WebAssembly core from a pinned public CDN; see
+  `THIRD_PARTY_NOTICES.md`.
 
 ## Run
 

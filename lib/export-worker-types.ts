@@ -1,12 +1,18 @@
 import type { MedalSettings } from "@/lib/types";
 import type { ModelExportFormat } from "@/lib/export-model";
+import type {
+  PresentationExportConfig,
+  PresentationExportFormat,
+} from "@/lib/presentation-export";
 
 export type ExportProgressStage =
   | "queued"
   | "building"
+  | "rendering"
   | "preparing"
   | "exporting"
   | "optimizing"
+  | "encoding"
   | "done";
 
 export interface ExportProgressUpdate {
@@ -15,13 +21,28 @@ export interface ExportProgressUpdate {
   status: string;
 }
 
-export interface ExportWorkerRequest {
+export interface ModelExportWorkerRequest {
   fileName: string;
   format: ModelExportFormat;
   id: string;
+  kind: "model";
   settings: MedalSettings;
   svgText: string;
 }
+
+export interface PresentationExportWorkerRequest {
+  config: PresentationExportConfig;
+  fileName: string;
+  format: PresentationExportFormat;
+  id: string;
+  kind: "presentation";
+  settings: MedalSettings;
+  svgText: string;
+}
+
+export type ExportWorkerRequest =
+  | ModelExportWorkerRequest
+  | PresentationExportWorkerRequest;
 
 export interface ExportWorkerProgressMessage {
   id: string;

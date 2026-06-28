@@ -13,12 +13,16 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
     "@openusd-wasm/pxr": "^0.0.6",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.0",
+    "@types/omggif": "^1.0.5",
     "jszip": "^3.10.1",
     "lucide-react": "^1.11.0",
     "next": "^16.2.4",
+    "omggif": "^1.0.10",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "three": "^0.184.0"

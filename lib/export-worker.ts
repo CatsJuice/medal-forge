@@ -2,6 +2,10 @@ import {
   exportMedalModel,
   getModelExportOption,
 } from "@/lib/export-model";
+import {
+  exportPresentationAnimation,
+  getPresentationExportOption,
+} from "@/lib/presentation-export";
 import type {
   ExportWorkerMessage,
   ExportWorkerRequest,
@@ -238,27 +242,47 @@ self.onmessage = async (event: MessageEvent<ExportWorkerRequest>) => {
   const request = event.data;
 
   try {
-    const blob = await exportMedalModel(
-      request.svgText,
-      request.settings,
-      request.format,
-      {
-        onProgress: (progress) => {
-          postWorkerMessage({
-            id: request.id,
-            progress,
-            type: "progress",
-          });
-        },
-      },
-    );
+    const blob =
+      request.kind === "presentation"
+        ? await exportPresentationAnimation(
+            request.svgText,
+            request.settings,
+            request.format,
+            request.config,
+            {
+              onProgress: (progress) => {
+                postWorkerMessage({
+                  id: request.id,
+                  progress,
+                  type: "progress",
+                });
+              },
+            },
+          )
+        : await exportMedalModel(
+            request.svgText,
+            request.settings,
+            request.format,
+            {
+              onProgress: (progress) => {
+                postWorkerMessage({
+                  id: request.id,
+                  progress,
+                  type: "progress",
+                });
+              },
+            },
+          );
     const buffer = await blob.arrayBuffer();
 
     postWorkerMessage(
       {
         buffer,
         id: request.id,
-        mimeType: getModelExportOption(request.format).mimeType,
+        mimeType:
+          request.kind === "presentation"
+            ? getPresentationExportOption(request.format).mimeType
+            : getModelExportOption(request.format).mimeType,
         sizeBytes: buffer.byteLength,
         type: "complete",
       },

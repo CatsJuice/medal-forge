@@ -6,12 +6,19 @@ import {
   getModelExportOption,
   type ModelExportFormat,
 } from "@/lib/export-model";
+import {
+  getPresentationExportOption,
+  type PresentationExportConfig,
+  type PresentationExportFormat,
+} from "@/lib/presentation-export";
 import type {
   ExportProgressUpdate,
   ExportWorkerMessage,
   ExportWorkerRequest,
 } from "@/lib/export-worker-types";
 import type { MedalSettings } from "@/lib/types";
+
+export type ExportQueueFormat = ModelExportFormat | PresentationExportFormat;
 
 export type ExportQueueItemStatus =
   | "completed"
@@ -24,7 +31,7 @@ export interface ExportQueueItem {
   createdAt: number;
   error?: string;
   fileName: string;
-  format: ModelExportFormat;
+  format: ExportQueueFormat;
   id: string;
   label: string;
   progress: number;
@@ -45,13 +52,36 @@ interface EnqueueExportOptions {
   svgText: string;
 }
 
-interface PendingExportPayload {
+interface EnqueuePresentationExportOptions {
+  config: PresentationExportConfig;
   fileName: string;
-  format: ModelExportFormat;
-  id: string;
+  format: PresentationExportFormat;
   settings: MedalSettings;
   svgText: string;
 }
+
+interface PendingModelExportPayload {
+  fileName: string;
+  format: ModelExportFormat;
+  id: string;
+  kind: "model";
+  settings: MedalSettings;
+  svgText: string;
+}
+
+interface PendingPresentationExportPayload {
+  config: PresentationExportConfig;
+  fileName: string;
+  format: PresentationExportFormat;
+  id: string;
+  kind: "presentation";
+  settings: MedalSettings;
+  svgText: string;
+}
+
+type PendingExportPayload =
+  | PendingModelExportPayload
+  | PendingPresentationExportPayload;
 
 interface CompletedExportDownload {
   blob: Blob;
@@ -190,11 +220,24 @@ function startNextExport() {
   }
 
   const request: ExportWorkerRequest = {
-    fileName: payload.fileName,
-    format: payload.format,
-    id: payload.id,
-    settings: payload.settings,
-    svgText: payload.svgText,
+    ...(payload.kind === "presentation"
+      ? {
+          config: payload.config,
+          fileName: payload.fileName,
+          format: payload.format,
+          id: payload.id,
+          kind: payload.kind,
+          settings: payload.settings,
+          svgText: payload.svgText,
+        }
+      : {
+          fileName: payload.fileName,
+          format: payload.format,
+          id: payload.id,
+          kind: payload.kind,
+          settings: payload.settings,
+          svgText: payload.svgText,
+        }),
   };
 
   try {
@@ -347,6 +390,7 @@ export function enqueueModelExport({
     fileName,
     format,
     id,
+    kind: "model",
     settings: cloneSettings(settings),
     svgText,
   });
@@ -372,6 +416,47 @@ export function enqueueModelExport({
   return id;
 }
 
+export function enqueuePresentationExport({
+  config,
+  fileName,
+  format,
+  settings,
+  svgText,
+}: EnqueuePresentationExportOptions) {
+  const option = getPresentationExportOption(format);
+  const id = createExportId();
+
+  pendingPayloads.set(id, {
+    config: cloneConfig(config),
+    fileName,
+    format,
+    id,
+    kind: "presentation",
+    settings: cloneSettings(settings),
+    svgText,
+  });
+
+  setSnapshot((current) => ({
+    ...current,
+    items: [
+      ...current.items,
+      {
+        createdAt: Date.now(),
+        fileName,
+        format,
+        id,
+        label: `${option.label} Presentation`,
+        progress: 0,
+        status: "queued",
+        statusText: "Queued",
+      },
+    ],
+  }));
+  startNextExport();
+
+  return id;
+}
+
 export function useExportQueueSnapshot() {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
@@ -382,4 +467,12 @@ function cloneSettings(settings: MedalSettings) {
   }
 
   return JSON.parse(JSON.stringify(settings)) as MedalSettings;
+}
+
+function cloneConfig(config: PresentationExportConfig) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(config);
+  }
+
+  return JSON.parse(JSON.stringify(config)) as PresentationExportConfig;
 }

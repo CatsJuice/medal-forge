@@ -11,6 +11,7 @@ import {
   Layers3,
   LoaderCircle,
   Palette,
+  Play,
   RotateCcw,
   Save,
   SlidersHorizontal,
@@ -33,6 +34,7 @@ import { useRouter } from "next/navigation";
 import { flushSync } from "react-dom";
 import { ExportQueuePanel } from "@/components/export-queue-panel";
 import { ModelPreview } from "@/components/model-preview";
+import { PresentationModeDialog } from "@/components/presentation-mode-dialog";
 import {
   DEFAULT_FILE_NAME,
   DEFAULT_SETTINGS,
@@ -599,6 +601,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
   const [status, setStatus] = useState(initialWorkId ? "Loading work" : "Ready");
   const [isBusy, setIsBusy] = useState(false);
   const [isAutoSaveAnimating, setIsAutoSaveAnimating] = useState(false);
+  const [isPresentationOpen, setIsPresentationOpen] = useState(false);
   const [editingLayerPathIndex, setEditingLayerPathIndex] = useState<number | null>(
     null,
   );
@@ -1604,6 +1607,19 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
           )}
         </div>
         <div className="topbar-actions">
+          <button
+            aria-label="Open presentation mode"
+            className={
+              isPresentationOpen
+                ? "icon-button presentation-trigger active"
+                : "icon-button presentation-trigger"
+            }
+            onClick={() => setIsPresentationOpen(true)}
+            title="Presentation mode"
+            type="button"
+          >
+            <Play size={15} />
+          </button>
           <ExportQueuePanel variant="toolbar" />
           <button
             aria-label="Save work"
@@ -1622,6 +1638,17 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
           </button>
         </div>
       </header>
+
+      {isPresentationOpen ? (
+        <PresentationModeDialog
+          disabled={isBusy}
+          fileStem={getFileStem(fileName)}
+          onClose={() => setIsPresentationOpen(false)}
+          onStatus={setStatus}
+          settings={settings}
+          svgText={svgText}
+        />
+      ) : null}
 
       <main className="workspace">
         <aside className="layers-sidebar">
