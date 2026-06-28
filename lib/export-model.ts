@@ -9,10 +9,18 @@ import {
   Mesh,
   type Material,
   type Object3D,
+  ShapeUtils,
+  Vector2,
   Vector3,
 } from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import { USDZExporter } from "three/examples/jsm/exporters/USDZExporter.js";
+import {
+  type MultiPolygon,
+  type Pair,
+  type Polygon,
+  default as polygonClipping,
+} from "polygon-clipping";
 import {
   strFromU8,
   strToU8,
@@ -48,6 +56,9 @@ type OpenUsdPxr = {
 
 const USD_GEOMETRY_FLOAT_PRECISION = 4;
 const USD_VERTEX_KEY_FLOAT_PRECISION = 6;
+const USD_BACKFACE_VISIBILITY_AREA_EPSILON = 1e-8;
+const USD_BACKFACE_VISIBILITY_COORDINATE_PRECISION = 6;
+const USD_BACKFACE_VISIBILITY_UNION_BATCH_SIZE = 128;
 const USDA_FLOAT_PATTERN =
   /(^|[^\w.])([-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\d+e[-+]?\d+)/gi;
 const USDA_COMMA_WHITESPACE_PATTERN = /,\s+/g;
@@ -70,6 +81,7 @@ const TEXTURE_MATERIAL_KEYS = [
   "specularColorMap",
   "specularIntensityMap",
 ] as const;
+const { difference, union } = polygonClipping;
 
 interface UsdSurfaceBucket {
   geometry: BufferGeometry;
@@ -90,6 +102,16 @@ interface UsdLayer {
   currentBottom: number;
   layerKey: string;
   order: number;
+}
+
+interface UsdMeshVisibilityData {
+  backTriangles: UsdBackfaceTriangle[];
+  footprint: MultiPolygon;
+}
+
+interface UsdBackfaceTriangle {
+  polygon: Polygon;
+  triangle: number;
 }
 
 interface UsdSurfaceBucketOptions {
@@ -461,7 +483,7 @@ function makeUsdCompatibleMeshes(group: Object3D) {
     }
   });
 
-  const includeBackByMesh = createUsdBackfaceInclusion(meshes);
+  const backfaceVisibilityByMesh = createUsdBackfaceVisibility(meshes);
   const surfaceOptions: UsdSurfaceBucketOptions = {
     includeUvs: meshes.some(meshUsesTexture),
   };
@@ -473,7 +495,7 @@ function makeUsdCompatibleMeshes(group: Object3D) {
 
     const surfaceBuckets = createUsdSurfaceBuckets(
       mesh,
-      includeBackByMesh.get(mesh) ?? true,
+      backfaceVisibilityByMesh.get(mesh),
       surfaceOptions,
       (material) => {
         const existing = materialClones.get(material);
@@ -541,9 +563,9 @@ function makeUsdCompatibleMeshes(group: Object3D) {
   };
 }
 
-function createUsdBackfaceInclusion(meshes: Mesh[]) {
+function createUsdBackfaceVisibility(meshes: Mesh[]) {
   const layerMap = new Map<string, UsdLayer>();
-  const includeBackByMesh = new Map<Mesh, boolean>();
+  const backfaceVisibilityByMesh = new Map<Mesh, Map<number, MultiPolygon>>();
 
   meshes.forEach((mesh, index) => {
     if (!mesh.visible || !mesh.parent) {
@@ -579,13 +601,232 @@ function createUsdBackfaceInclusion(meshes: Mesh[]) {
       left.layerKey.localeCompare(right.layerKey),
   );
 
-  layers.forEach((layer, layerIndex) => {
-    layer.meshes.forEach((mesh) => {
-      includeBackByMesh.set(mesh, layerIndex === 0);
-    });
-  });
+  let coveredFromBack: MultiPolygon = [];
 
-  return includeBackByMesh;
+  for (const layer of layers) {
+    const layerFootprints: MultiPolygon[] = [];
+
+    for (const mesh of layer.meshes) {
+      const source = createUsdAnalysisGeometry(mesh);
+
+      try {
+        const visibilityData = getUsdMeshVisibilityData(mesh, source);
+        const visibleTriangles = new Map<number, MultiPolygon>();
+
+        for (const backTriangle of visibilityData.backTriangles) {
+          const visibleArea = getVisibleBackfaceArea(
+            backTriangle.polygon,
+            coveredFromBack,
+          );
+
+          if (!isMultiPolygonEmpty(visibleArea)) {
+            visibleTriangles.set(backTriangle.triangle, visibleArea);
+          }
+        }
+
+        backfaceVisibilityByMesh.set(mesh, visibleTriangles);
+
+        if (!isMultiPolygonEmpty(visibilityData.footprint)) {
+          layerFootprints.push(visibilityData.footprint);
+        }
+      } finally {
+        source.dispose();
+      }
+    }
+
+    coveredFromBack = unionMultiPolygons([
+      coveredFromBack,
+      ...layerFootprints,
+    ]);
+  }
+
+  return backfaceVisibilityByMesh;
+}
+
+function createUsdAnalysisGeometry(mesh: Mesh) {
+  const source = mesh.geometry.index
+    ? mesh.geometry.toNonIndexed()
+    : mesh.geometry.clone();
+
+  if (!source.getAttribute("normal")) {
+    source.computeVertexNormals();
+  }
+
+  return source;
+}
+
+function getUsdMeshVisibilityData(
+  mesh: Mesh,
+  source: BufferGeometry,
+): UsdMeshVisibilityData {
+  const position = source.getAttribute("position");
+  const normal = source.getAttribute("normal");
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const zBounds = getGeometryZBounds(source);
+  const backTriangles: UsdBackfaceTriangle[] = [];
+  const projectedTriangles: Polygon[] = [];
+
+  for (let triangle = 0; triangle < position.count; triangle += 3) {
+    const materialIndex = getTriangleMaterialIndex(source, triangle);
+    const sourceMaterial = materials[materialIndex] ?? materials[0];
+
+    if (!sourceMaterial) {
+      continue;
+    }
+
+    const polygon = getTriangleProjectionPolygon(position, triangle);
+
+    if (!polygon) {
+      continue;
+    }
+
+    projectedTriangles.push(polygon);
+
+    const surface = classifyTriangleSurface(
+      position,
+      normal,
+      triangle,
+      materialIndex,
+      zBounds,
+    );
+
+    if (surface === "back") {
+      backTriangles.push({ polygon, triangle });
+    }
+  }
+
+  return {
+    backTriangles,
+    footprint: unionPolygons(projectedTriangles),
+  };
+}
+
+function getVisibleBackfaceArea(
+  polygon: Polygon,
+  coveredFromBack: MultiPolygon,
+) {
+  if (isMultiPolygonEmpty(coveredFromBack)) {
+    return [polygon];
+  }
+
+  return difference(polygon, coveredFromBack);
+}
+
+function getTriangleProjectionPolygon(
+  position: GeometryAttribute,
+  triangle: number,
+): Polygon | null {
+  const ring: Pair[] = [
+    getProjectedPoint(position, triangle),
+    getProjectedPoint(position, triangle + 1),
+    getProjectedPoint(position, triangle + 2),
+  ];
+
+  if (Math.abs(getRingSignedArea(ring)) <= USD_BACKFACE_VISIBILITY_AREA_EPSILON) {
+    return null;
+  }
+
+  return [ring];
+}
+
+function getProjectedPoint(position: GeometryAttribute, vertex: number): Pair {
+  return [
+    formatVisibilityCoordinate(position.getComponent(vertex, 0)),
+    formatVisibilityCoordinate(position.getComponent(vertex, 1)),
+  ];
+}
+
+function formatVisibilityCoordinate(value: number) {
+  return Number(value.toFixed(USD_BACKFACE_VISIBILITY_COORDINATE_PRECISION));
+}
+
+function unionPolygons(polygons: Polygon[]): MultiPolygon {
+  const filteredPolygons = polygons.filter(
+    (polygon) => getPolygonArea(polygon) > USD_BACKFACE_VISIBILITY_AREA_EPSILON,
+  );
+
+  if (filteredPolygons.length === 0) {
+    return [];
+  }
+
+  let result: MultiPolygon = [];
+
+  for (
+    let index = 0;
+    index < filteredPolygons.length;
+    index += USD_BACKFACE_VISIBILITY_UNION_BATCH_SIZE
+  ) {
+    const chunk = filteredPolygons.slice(
+      index,
+      index + USD_BACKFACE_VISIBILITY_UNION_BATCH_SIZE,
+    );
+    const chunkUnion =
+      chunk.length === 1 ? [chunk[0]] : union(chunk[0], ...chunk.slice(1));
+
+    result = result.length === 0 ? chunkUnion : union(result, chunkUnion);
+  }
+
+  return result;
+}
+
+function unionMultiPolygons(multiPolygons: MultiPolygon[]): MultiPolygon {
+  const filteredMultiPolygons = multiPolygons.filter(
+    (multiPolygon) => !isMultiPolygonEmpty(multiPolygon),
+  );
+
+  if (filteredMultiPolygons.length === 0) {
+    return [];
+  }
+
+  let result = filteredMultiPolygons[0];
+
+  for (let index = 1; index < filteredMultiPolygons.length; index += 1) {
+    result = union(result, filteredMultiPolygons[index]);
+  }
+
+  return result;
+}
+
+function isMultiPolygonEmpty(multiPolygon: MultiPolygon) {
+  return (
+    multiPolygon.length === 0 ||
+    getMultiPolygonArea(multiPolygon) <= USD_BACKFACE_VISIBILITY_AREA_EPSILON
+  );
+}
+
+function getMultiPolygonArea(multiPolygon: MultiPolygon) {
+  return multiPolygon.reduce(
+    (sum, polygon) => sum + getPolygonArea(polygon),
+    0,
+  );
+}
+
+function getPolygonArea(polygon: Polygon) {
+  if (polygon.length === 0) {
+    return 0;
+  }
+
+  const [outerRing, ...holes] = polygon;
+  const outerArea = Math.abs(getRingSignedArea(outerRing));
+  const holeArea = holes.reduce(
+    (sum, ring) => sum + Math.abs(getRingSignedArea(ring)),
+    0,
+  );
+
+  return Math.max(outerArea - holeArea, 0);
+}
+
+function getRingSignedArea(ring: Pair[]) {
+  let area = 0;
+
+  for (let index = 0; index < ring.length; index += 1) {
+    const current = ring[index];
+    const next = ring[(index + 1) % ring.length];
+
+    area += current[0] * next[1] - next[0] * current[1];
+  }
+
+  return area / 2;
 }
 
 function getMeshLayerKey(mesh: Mesh, index: number) {
@@ -613,7 +854,7 @@ function getGeometryZBounds(geometry: BufferGeometry) {
 
 function createUsdSurfaceBuckets(
   mesh: Mesh,
-  includeBack: boolean,
+  backfaceVisibility: Map<number, MultiPolygon> | undefined,
   options: UsdSurfaceBucketOptions,
   getUsdMaterial: (material: Material) => Material,
 ): UsdSurfaceBucket[] {
@@ -651,7 +892,21 @@ function createUsdSurfaceBuckets(
       zBounds,
     );
 
-    if (surface === "back" && !includeBack) {
+    if (surface === "back") {
+      const visibleBackfaceArea = backfaceVisibility?.get(triangle);
+
+      if (!visibleBackfaceArea || isMultiPolygonEmpty(visibleBackfaceArea)) {
+        continue;
+      }
+
+      const bucket = getSurfaceBuildBucket(
+        buckets,
+        `${surface}:${sourceMaterial.uuid}`,
+        `${mesh.name || "mesh"} ${surface}`,
+        getUsdMaterial(sourceMaterial),
+      );
+
+      appendBackfaceAreaToBucket(bucket, source, triangle, visibleBackfaceArea);
       continue;
     }
 
@@ -784,6 +1039,267 @@ function getSurfaceBuildBucket(
   buckets.set(key, bucket);
 
   return bucket;
+}
+
+function appendBackfaceAreaToBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+  triangle: number,
+  visibleArea: MultiPolygon,
+) {
+  const { normalMultiplier } = getCapTriangleExportOrientation(
+    source,
+    triangle,
+    "back",
+  );
+
+  for (const name of Object.keys(source.attributes)) {
+    if (!bucket.attributes.has(name)) {
+      bucket.attributes.set(name, []);
+    }
+  }
+
+  for (const polygon of visibleArea) {
+    appendBackfacePolygonToBucket(bucket, source, triangle, polygon, normalMultiplier);
+  }
+}
+
+function appendBackfacePolygonToBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+  triangle: number,
+  polygon: Polygon,
+  normalMultiplier: number,
+) {
+  const triangulation = getPolygonTriangulationInput(polygon);
+
+  if (!triangulation) {
+    return;
+  }
+
+  const triangles = ShapeUtils.triangulateShape(
+    triangulation.contour,
+    triangulation.holes,
+  );
+
+  for (const triangleIndices of triangles) {
+    const trianglePoints = triangleIndices.map(
+      (index) => triangulation.vertices[index],
+    );
+    const order = getGeneratedBackfaceTriangleOrder(source, triangle, trianglePoints);
+
+    for (const vertexIndex of order) {
+      bucket.indices.push(
+        appendInterpolatedVertexToBucket(
+          bucket,
+          source,
+          triangle,
+          trianglePoints[vertexIndex],
+          normalMultiplier,
+        ),
+      );
+    }
+  }
+}
+
+function getPolygonTriangulationInput(polygon: Polygon) {
+  const [outerRing, ...holeRings] = polygon;
+  const contour = getTriangulationRing(outerRing);
+
+  if (contour.length < 3) {
+    return null;
+  }
+
+  const holes = holeRings
+    .map(getTriangulationRing)
+    .filter((ring) => ring.length >= 3);
+  const vertices = [...contour, ...holes.flat()];
+
+  return {
+    contour,
+    holes,
+    vertices,
+  };
+}
+
+function getTriangulationRing(ring: Pair[]) {
+  const points: Pair[] = [];
+
+  for (const point of ring) {
+    const nextPoint: Pair = [
+      formatVisibilityCoordinate(point[0]),
+      formatVisibilityCoordinate(point[1]),
+    ];
+    const previousPoint = points.at(-1);
+
+    if (previousPoint && pointsEqual(previousPoint, nextPoint)) {
+      continue;
+    }
+
+    points.push(nextPoint);
+  }
+
+  if (points.length > 1 && pointsEqual(points[0], points[points.length - 1])) {
+    points.pop();
+  }
+
+  if (
+    points.length < 3 ||
+    Math.abs(getRingSignedArea(points)) <= USD_BACKFACE_VISIBILITY_AREA_EPSILON
+  ) {
+    return [];
+  }
+
+  return points.map((point) => new Vector2(point[0], point[1]));
+}
+
+function pointsEqual(left: Pair, right: Pair) {
+  return left[0] === right[0] && left[1] === right[1];
+}
+
+function getGeneratedBackfaceTriangleOrder(
+  source: BufferGeometry,
+  triangle: number,
+  points: Vector2[],
+) {
+  const a = getInterpolatedPosition(source, triangle, points[0]);
+  const b = getInterpolatedPosition(source, triangle, points[1]);
+  const c = getInterpolatedPosition(source, triangle, points[2]);
+  const normalZ = b.sub(a).cross(c.sub(a)).z;
+
+  return normalZ <= 0 ? [0, 1, 2] : [0, 2, 1];
+}
+
+function appendInterpolatedVertexToBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+  triangle: number,
+  point: Vector2,
+  normalMultiplier: number,
+) {
+  const weights = getTriangleBarycentricWeights(source, triangle, point);
+  const attributeValues = new Map<string, number[]>();
+  const keyParts: string[] = [];
+
+  for (const name of Object.keys(source.attributes)) {
+    const attribute = source.getAttribute(name);
+    const values = getInterpolatedAttributeValues(
+      attribute,
+      triangle,
+      weights,
+      name === "normal" ? normalMultiplier : 1,
+      name === "normal",
+    );
+
+    keyParts.push(name);
+    attributeValues.set(name, values);
+
+    for (const value of values) {
+      keyParts.push(formatVertexKeyNumber(value));
+    }
+  }
+
+  const key = keyParts.join("|");
+  const existing = bucket.vertexKeys.get(key);
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const vertexIndex =
+    (bucket.attributes.get("position")?.length ?? 0) /
+    (source.getAttribute("position")?.itemSize ?? 3);
+
+  for (const [name, values] of attributeValues) {
+    bucket.attributes.get(name)?.push(...values);
+  }
+
+  bucket.vertexKeys.set(key, vertexIndex);
+
+  return vertexIndex;
+}
+
+function getInterpolatedAttributeValues(
+  attribute: GeometryAttribute,
+  triangle: number,
+  weights: [number, number, number],
+  multiplier: number,
+  normalizeVector: boolean,
+) {
+  const values: number[] = [];
+
+  for (let itemIndex = 0; itemIndex < attribute.itemSize; itemIndex += 1) {
+    values.push(
+      attribute.getComponent(triangle, itemIndex) * weights[0] +
+        attribute.getComponent(triangle + 1, itemIndex) * weights[1] +
+        attribute.getComponent(triangle + 2, itemIndex) * weights[2],
+    );
+  }
+
+  if (normalizeVector && attribute.itemSize >= 3) {
+    const length = Math.hypot(values[0], values[1], values[2]);
+
+    if (length > 0) {
+      values[0] /= length;
+      values[1] /= length;
+      values[2] /= length;
+    }
+  }
+
+  if (multiplier !== 1) {
+    for (let index = 0; index < values.length; index += 1) {
+      values[index] *= multiplier;
+    }
+  }
+
+  return values;
+}
+
+function getInterpolatedPosition(
+  source: BufferGeometry,
+  triangle: number,
+  point: Vector2,
+) {
+  const position = source.getAttribute("position");
+  const weights = getTriangleBarycentricWeights(source, triangle, point);
+
+  return new Vector3(
+    position.getComponent(triangle, 0) * weights[0] +
+      position.getComponent(triangle + 1, 0) * weights[1] +
+      position.getComponent(triangle + 2, 0) * weights[2],
+    position.getComponent(triangle, 1) * weights[0] +
+      position.getComponent(triangle + 1, 1) * weights[1] +
+      position.getComponent(triangle + 2, 1) * weights[2],
+    position.getComponent(triangle, 2) * weights[0] +
+      position.getComponent(triangle + 1, 2) * weights[1] +
+      position.getComponent(triangle + 2, 2) * weights[2],
+  );
+}
+
+function getTriangleBarycentricWeights(
+  source: BufferGeometry,
+  triangle: number,
+  point: Vector2,
+): [number, number, number] {
+  const position = source.getAttribute("position");
+  const ax = position.getComponent(triangle, 0);
+  const ay = position.getComponent(triangle, 1);
+  const bx = position.getComponent(triangle + 1, 0);
+  const by = position.getComponent(triangle + 1, 1);
+  const cx = position.getComponent(triangle + 2, 0);
+  const cy = position.getComponent(triangle + 2, 1);
+  const denominator = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+
+  if (Math.abs(denominator) <= USD_BACKFACE_VISIBILITY_AREA_EPSILON) {
+    return [1 / 3, 1 / 3, 1 / 3];
+  }
+
+  const first =
+    ((by - cy) * (point.x - cx) + (cx - bx) * (point.y - cy)) / denominator;
+  const second =
+    ((cy - ay) * (point.x - cx) + (ax - cx) * (point.y - cy)) / denominator;
+
+  return [first, second, 1 - first - second];
 }
 
 function appendTriangleToBucket(

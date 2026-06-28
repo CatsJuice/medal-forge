@@ -21,6 +21,7 @@
     "lucide-react": "^1.11.0",
     "next": "^16.2.4",
     "omggif": "^1.0.10",
+    "polygon-clipping": "^0.15.7",
     "prores-wasm-encoder": "^0.2.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
