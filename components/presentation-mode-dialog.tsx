@@ -1,7 +1,7 @@
 "use client";
 
-import { Environment } from "@react-three/drei";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Environment, OrbitControls } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
   Download,
   Play,
@@ -27,11 +27,13 @@ import {
   DEFAULT_PRESENTATION_FLIP_START_ANGLES,
   DEFAULT_PRESENTATION_FRAME_RATE,
   DEFAULT_PRESENTATION_QUALITY,
+  DEFAULT_PRESENTATION_SCALE,
   DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS,
   DEFAULT_PRESENTATION_SPIN_START_ANGLES,
   MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
   MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+  MAX_PRESENTATION_SCALE,
   MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
   MAX_PRESENTATION_SPIN_ANGLE_DEGREES,
   MAX_PRESENTATION_SPIN_FREQUENCY_HZ,
@@ -39,6 +41,7 @@ import {
   MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
   MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+  MIN_PRESENTATION_SCALE,
   MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
   MIN_PRESENTATION_SPIN_ANGLE_DEGREES,
   MIN_PRESENTATION_SPIN_FREQUENCY_HZ,
@@ -140,6 +143,7 @@ const SPIN_ANIMATION_MODE_OPTIONS: Array<{
 ];
 
 const PRESENTATION_DIALOG_EXIT_MS = 260;
+const PRESENTATION_PREVIEW_FRAME_PADDING = 48;
 
 function NumberField({
   ariaLabel,
@@ -172,6 +176,36 @@ function NumberField({
           value={value}
         />
         {unit ? <small>{unit}</small> : null}
+      </span>
+    </label>
+  );
+}
+
+function ScaleControl({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: number) => void;
+  value: number;
+}) {
+  const percent = Math.round(value * 100);
+
+  return (
+    <label className="presentation-control-row presentation-scale-control">
+      <span>{label}</span>
+      <span className="presentation-scale-field">
+        <input
+          aria-label={`${label} percentage`}
+          max={Math.round(MAX_PRESENTATION_SCALE * 100)}
+          min={Math.round(MIN_PRESENTATION_SCALE * 100)}
+          onChange={(event) => onChange(Number(event.target.value) / 100)}
+          step={1}
+          type="range"
+          value={percent}
+        />
+        <small>{percent}%</small>
       </span>
     </label>
   );
@@ -214,13 +248,25 @@ function PresentationAnimatedModel({
       clock.elapsedTime - startTimeRef.current,
     );
     wrapper.rotation.set(rotation.x, rotation.y, rotation.z);
+    wrapper.scale.setScalar(config.scale);
   });
 
   return (
-    <group ref={wrapperRef}>
+    <group ref={wrapperRef} scale={[config.scale, config.scale, config.scale]}>
       <primitive object={group} />
     </group>
   );
+}
+
+function PresentationCameraTarget() {
+  const camera = useThree((state) => state.camera);
+
+  useEffect(() => {
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+  }, [camera]);
+
+  return null;
 }
 
 function PresentationPreview({
@@ -232,31 +278,95 @@ function PresentationPreview({
   settings: MedalSettings;
   svgText: string;
 }) {
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [exportFrameSize, setExportFrameSize] = useState(0);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+
+    if (!stage) {
+      return;
+    }
+
+    const updateExportFrameSize = () => {
+      const bounds = stage.getBoundingClientRect();
+      const nextSize = Math.max(
+        0,
+        Math.floor(
+          Math.min(bounds.width, bounds.height) -
+            PRESENTATION_PREVIEW_FRAME_PADDING,
+        ),
+      );
+
+      setExportFrameSize(nextSize);
+    };
+
+    updateExportFrameSize();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateExportFrameSize);
+
+      return () => {
+        window.removeEventListener("resize", updateExportFrameSize);
+      };
+    }
+
+    const resizeObserver = new ResizeObserver(updateExportFrameSize);
+    resizeObserver.observe(stage);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  const exportFrameStyle =
+    exportFrameSize > 0
+      ? {
+          height: exportFrameSize,
+          width: exportFrameSize,
+        }
+      : undefined;
+
   return (
-    <div className="presentation-preview-stage">
-      <Canvas
-        camera={{ position: [0, -7, 5.2], fov: 38 }}
-        dpr={[1, 2]}
-        gl={{
-          alpha: true,
-          antialias: true,
-          premultipliedAlpha: false,
-          preserveDrawingBuffer: true,
-        }}
-        style={{ height: "100%", width: "100%" }}
+    <div className="presentation-preview-stage" ref={stageRef}>
+      <div
+        aria-label="Presentation export boundary"
+        className="presentation-preview-export-frame"
+        style={exportFrameStyle}
       >
-        <ambientLight intensity={0.62} />
-        <directionalLight intensity={2.2} position={[4.5, -5.5, 8]} />
-        <directionalLight intensity={0.65} position={[-5, 3, 4]} />
-        <Suspense fallback={null}>
+        <Canvas
+          camera={{ position: [0, -7, 5.2], fov: 38 }}
+          dpr={[1, 2]}
+          gl={{
+            alpha: true,
+            antialias: true,
+            premultipliedAlpha: false,
+            preserveDrawingBuffer: true,
+          }}
+          style={{ height: "100%", width: "100%" }}
+        >
+          <PresentationCameraTarget />
+          <ambientLight intensity={0.62} />
+          <directionalLight intensity={2.2} position={[4.5, -5.5, 8]} />
+          <directionalLight intensity={0.65} position={[-5, 3, 4]} />
           <PresentationAnimatedModel
             config={config}
             settings={settings}
             svgText={svgText}
           />
-          <Environment preset="city" />
-        </Suspense>
-      </Canvas>
+          <Suspense fallback={null}>
+            <Environment preset="city" />
+          </Suspense>
+          <OrbitControls
+            makeDefault
+            enablePan={false}
+            enableRotate={false}
+            enableZoom={false}
+            target={[0, 0, 0]}
+          />
+        </Canvas>
+        <div aria-hidden="true" className="presentation-export-boundary" />
+      </div>
     </div>
   );
 }
@@ -337,6 +447,8 @@ export function PresentationModeDialog({
   const [quality, setQuality] = useState<PresentationExportQuality>(
     DEFAULT_PRESENTATION_QUALITY,
   );
+  const [spinScale, setSpinScale] = useState(DEFAULT_PRESENTATION_SCALE);
+  const [flipScale, setFlipScale] = useState(DEFAULT_PRESENTATION_SCALE);
   const [format, setFormat] = useState<PresentationExportFormat>("mov");
   const [isClosing, setIsClosing] = useState(false);
   const closeTimerRef = useRef<number | null>(null);
@@ -351,6 +463,7 @@ export function PresentationModeDialog({
         mode,
         playbackIntervalSeconds: flipPlaybackInterval,
         quality,
+        scale: flipScale,
         startAngles: flipStartAngles,
       };
     }
@@ -361,18 +474,21 @@ export function PresentationModeDialog({
       frameRate,
       mode,
       quality,
+      scale: spinScale,
       startAngles: spinStartAngles,
     };
   }, [
     durationSeconds,
     flipEndAngles,
     flipPlaybackInterval,
+    flipScale,
     flipSpeed,
     flipStartAngles,
     frameRate,
     mode,
     quality,
     spinAxisAnimations,
+    spinScale,
     spinStartAngles,
   ]);
 
@@ -393,6 +509,7 @@ export function PresentationModeDialog({
           qualityOption.size * qualityOption.size * exportFrameCount * 0.38,
         )
       : null;
+  const activeScale = mode === "spin" ? spinScale : flipScale;
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -472,10 +589,20 @@ export function PresentationModeDialog({
     }));
   }
 
+  function updateActiveScale(value: number) {
+    if (mode === "spin") {
+      setSpinScale(value);
+      return;
+    }
+
+    setFlipScale(value);
+  }
+
   function resetCurrentMode() {
     if (mode === "spin") {
       setSpinStartAngles(DEFAULT_PRESENTATION_SPIN_START_ANGLES);
       setSpinAxisAnimations(DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS);
+      setSpinScale(DEFAULT_PRESENTATION_SCALE);
       return;
     }
 
@@ -483,6 +610,7 @@ export function PresentationModeDialog({
     setFlipEndAngles(DEFAULT_PRESENTATION_FLIP_END_ANGLES);
     setFlipSpeed(DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND);
     setFlipPlaybackInterval(DEFAULT_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS);
+    setFlipScale(DEFAULT_PRESENTATION_SCALE);
   }
 
   function updateFormat(nextFormat: PresentationExportFormat) {
@@ -580,6 +708,11 @@ export function PresentationModeDialog({
                 </button>
               </div>
               <div className="presentation-control-stack">
+                <ScaleControl
+                  label="Scale"
+                  onChange={updateActiveScale}
+                  value={activeScale}
+                />
                 {mode === "spin" ? (
                   <>
                     <div className="presentation-angle-group">

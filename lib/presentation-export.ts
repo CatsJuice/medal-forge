@@ -39,6 +39,7 @@ export interface PresentationBaseExportConfig {
   frameRate: PresentationFrameRate;
   mode: PresentationMode;
   quality: PresentationExportQuality;
+  scale: number;
 }
 
 export interface PresentationSpinExportConfig
@@ -139,6 +140,8 @@ export const MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES = 0;
 export const MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES = 3600;
 export const MIN_PRESENTATION_SPIN_FREQUENCY_HZ = 0;
 export const MAX_PRESENTATION_SPIN_FREQUENCY_HZ = 10;
+export const MIN_PRESENTATION_SCALE = 0.5;
+export const MAX_PRESENTATION_SCALE = 1.2;
 
 let presentationProResModulePromise:
   | Promise<PresentationProResModule>
@@ -208,6 +211,7 @@ export const DEFAULT_PRESENTATION_DURATION_SECONDS =
 export const DEFAULT_PRESENTATION_FRAME_RATE: PresentationFrameRate = 24;
 export const DEFAULT_PRESENTATION_QUALITY: PresentationExportQuality =
   "standard";
+export const DEFAULT_PRESENTATION_SCALE = 0.88;
 
 export const PRESENTATION_EXPORT_OPTIONS: PresentationExportOption[] = [
   {
@@ -418,6 +422,7 @@ function normalizePresentationConfig(
   );
   const frameRate = normalizePresentationFrameRate(config.frameRate);
   const quality = getPresentationQualityOption(config.quality).quality;
+  const scale = normalizePresentationScale(config.scale);
 
   if (config.mode === "flip") {
     return {
@@ -436,6 +441,7 @@ function normalizePresentationConfig(
         MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
       ),
       quality,
+      scale,
       startAngles: normalizePresentationEulerAngles(config.startAngles),
     };
   }
@@ -445,6 +451,7 @@ function normalizePresentationConfig(
     frameRate,
     mode: "spin",
     quality,
+    scale,
     axisAnimations: normalizePresentationSpinAxisAnimations(
       config.axisAnimations,
     ),
@@ -691,6 +698,7 @@ function renderPresentationFrame(
 ) {
   const rotation = getPresentationRotation(config, elapsedSeconds);
   context.wrapper.rotation.set(rotation.x, rotation.y, rotation.z);
+  context.wrapper.scale.setScalar(config.scale);
   context.renderer.clear();
   context.renderer.render(context.scene, context.camera);
 
@@ -1143,6 +1151,14 @@ function normalizePresentationFrameRate(value: number): PresentationFrameRate {
       ? option
       : closest,
   ).fps;
+}
+
+function normalizePresentationScale(value: number) {
+  return clampNumber(
+    value,
+    MIN_PRESENTATION_SCALE,
+    MAX_PRESENTATION_SCALE,
+  );
 }
 
 function toBlobPart(chunk: Uint8Array): BlobPart {

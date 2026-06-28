@@ -368,9 +368,12 @@ button {
 
 .presentation-preview-stage {
   position: relative;
+  display: grid;
+  place-items: center;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  padding: 24px;
   background-color: #20262f;
   background-image:
     linear-gradient(45deg, rgb(255 255 255 / 8%) 25%, transparent 25%),
@@ -385,13 +388,46 @@ button {
   background-size: 24px 24px;
 }
 
-.presentation-preview-stage::after {
+.presentation-preview-export-frame {
+  position: relative;
+  width: min(100%, 72vmin);
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.presentation-export-boundary {
   position: absolute;
-  inset: 18px;
-  border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 8px;
+  inset: 0;
+  z-index: 1;
+  border: 1px solid rgb(255 255 255 / 68%);
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 30%),
+    0 0 0 9999px rgb(9 12 16 / 10%);
   pointer-events: none;
+}
+
+.presentation-export-boundary::before,
+.presentation-export-boundary::after {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-color: #ffffff;
   content: "";
+}
+
+.presentation-export-boundary::before {
+  top: -1px;
+  left: -1px;
+  border-top: 2px solid;
+  border-left: 2px solid;
+}
+
+.presentation-export-boundary::after {
+  right: -1px;
+  bottom: -1px;
+  border-right: 2px solid;
+  border-bottom: 2px solid;
 }
 
 .presentation-controls-panel {
@@ -583,6 +619,28 @@ button {
 
 .presentation-select:focus-visible {
   box-shadow: 0 0 0 2px rgb(39 110 241 / 18%);
+}
+
+.presentation-scale-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.presentation-scale-field input {
+  width: 100%;
+  accent-color: var(--accent-strong);
+}
+
+.presentation-scale-field small {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 680;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .presentation-export-summary {
