@@ -158,6 +158,11 @@ function ensureWorker() {
   return worker;
 }
 
+function disposeWorker() {
+  worker?.terminate();
+  worker = null;
+}
+
 function updateQueueItem(
   id: string,
   updater: (item: ExportQueueItem) => ExportQueueItem,
@@ -253,6 +258,7 @@ function startNextExport() {
   };
 
   try {
+    disposeWorker();
     ensureWorker().postMessage(request);
   } catch (error) {
     completeWithError(
@@ -321,6 +327,7 @@ async function completeWithResult(
 
   pendingPayloads.delete(id);
   saveHandles.delete(id);
+  disposeWorker();
   setSnapshot((current) => ({
     activeId: current.activeId === id ? null : current.activeId,
     items: trimFinishedItems(
@@ -356,6 +363,7 @@ async function writeBlobToSaveHandle(
 
 function completeWithError(id: string, error: string) {
   pendingPayloads.delete(id);
+  disposeWorker();
   setSnapshot((current) => ({
     activeId: current.activeId === id ? null : current.activeId,
     items: trimFinishedItems(
@@ -410,8 +418,7 @@ function failActiveExport(error: string) {
     return;
   }
 
-  worker?.terminate();
-  worker = null;
+  disposeWorker();
   completeWithError(activeId, error);
 }
 

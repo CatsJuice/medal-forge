@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-28-v4";
+const APP_VERSION = "2026-06-28-v5";
 const CORE_CACHE = `medal-forge-core-${APP_VERSION}`;
 const RUNTIME_CACHE = `medal-forge-runtime-${APP_VERSION}`;
 const PRECACHE_MESSAGE_TYPE = "MEDAL_FORGE_PRECACHE_URLS";
@@ -42,8 +42,7 @@ function isStaticAssetRequest(request, url) {
     request.destination === "font" ||
     request.destination === "image" ||
     request.destination === "script" ||
-    request.destination === "style" ||
-    request.destination === "worker"
+    request.destination === "style"
   );
 }
 
@@ -283,6 +282,11 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (url.pathname.startsWith("/vendor/")) {
+    event.respondWith(networkFirst(request));
+    return;
+  }
+
+  if (request.destination === "worker") {
     event.respondWith(networkFirst(request));
     return;
   }
