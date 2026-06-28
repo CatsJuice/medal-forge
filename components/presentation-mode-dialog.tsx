@@ -22,14 +22,17 @@ import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
 import {
   DEFAULT_PRESENTATION_DURATION_SECONDS,
   DEFAULT_PRESENTATION_FLIP_END_ANGLES,
+  DEFAULT_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   DEFAULT_PRESENTATION_FLIP_START_ANGLES,
   DEFAULT_PRESENTATION_FRAME_RATE,
   DEFAULT_PRESENTATION_QUALITY,
   DEFAULT_PRESENTATION_SPIN_SPEEDS,
   MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
+  MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
+  MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   PRESENTATION_EXPORT_OPTIONS,
   PRESENTATION_QUALITY_OPTIONS,
@@ -276,6 +279,9 @@ export function PresentationModeDialog({
   const [flipSpeed, setFlipSpeed] = useState(
     DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   );
+  const [flipPlaybackInterval, setFlipPlaybackInterval] = useState(
+    DEFAULT_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
+  );
   const [durationSeconds, setDurationSeconds] = useState(
     DEFAULT_PRESENTATION_DURATION_SECONDS,
   );
@@ -297,6 +303,7 @@ export function PresentationModeDialog({
         flipSpeedDegPerSecond: flipSpeed,
         frameRate,
         mode,
+        playbackIntervalSeconds: flipPlaybackInterval,
         quality,
         startAngles: flipStartAngles,
       };
@@ -312,6 +319,7 @@ export function PresentationModeDialog({
   }, [
     durationSeconds,
     flipEndAngles,
+    flipPlaybackInterval,
     flipSpeed,
     flipStartAngles,
     frameRate,
@@ -409,6 +417,7 @@ export function PresentationModeDialog({
     setFlipStartAngles(DEFAULT_PRESENTATION_FLIP_START_ANGLES);
     setFlipEndAngles(DEFAULT_PRESENTATION_FLIP_END_ANGLES);
     setFlipSpeed(DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND);
+    setFlipPlaybackInterval(DEFAULT_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS);
   }
 
   function updateFormat(nextFormat: PresentationExportFormat) {
@@ -543,6 +552,16 @@ export function PresentationModeDialog({
                       step={30}
                       unit="deg/s"
                       value={flipSpeed}
+                    />
+                    <NumberField
+                      ariaLabel="Playback interval"
+                      label="Interval"
+                      max={MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS}
+                      min={MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS}
+                      onChange={setFlipPlaybackInterval}
+                      step={0.1}
+                      unit="s"
+                      value={flipPlaybackInterval}
                     />
                     <div className="presentation-angle-group">
                       <span className="presentation-angle-group-title">

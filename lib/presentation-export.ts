@@ -44,6 +44,7 @@ export interface PresentationFlipExportConfig
   endAngles: PresentationEulerAngles;
   flipSpeedDegPerSecond: number;
   mode: "flip";
+  playbackIntervalSeconds: number;
   startAngles: PresentationEulerAngles;
 }
 
@@ -117,6 +118,8 @@ const MIN_EXPORT_DURATION_SECONDS = 1;
 const MAX_EXPORT_DURATION_SECONDS = 12;
 export const MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 30;
 export const MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 1440;
+export const MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS = 0;
+export const MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS = 10;
 export const MIN_PRESENTATION_FLIP_ANGLE_DEGREES = -3600;
 export const MAX_PRESENTATION_FLIP_ANGLE_DEGREES = 3600;
 
@@ -160,6 +163,7 @@ export const DEFAULT_PRESENTATION_FLIP_END_ANGLES: PresentationEulerAngles = {
   z: DEFAULT_PRESENTATION_FLIP_START_ANGLES.z,
 };
 export const DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 360;
+export const DEFAULT_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS = 0;
 export const DEFAULT_PRESENTATION_DURATION_SECONDS =
   DEFAULT_EXPORT_DURATION_SECONDS;
 export const DEFAULT_PRESENTATION_FRAME_RATE: PresentationFrameRate = 24;
@@ -287,7 +291,7 @@ export function getPresentationRotation(
     };
   }
 
-  const cycleDuration = Math.max(
+  const flipDuration = Math.max(
     0.1,
     getPresentationFlipAngleTravel(config.startAngles, config.endAngles) /
       Math.max(
@@ -295,9 +299,14 @@ export function getPresentationRotation(
         Math.abs(config.flipSpeedDegPerSecond),
       ),
   );
+  const playbackIntervalSeconds = Math.max(
+    MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
+    config.playbackIntervalSeconds,
+  );
+  const cycleDuration = flipDuration + playbackIntervalSeconds;
   const loop = options.loop ?? true;
   const cycleElapsed = loop ? elapsedSeconds % cycleDuration : elapsedSeconds;
-  const cycleProgress = clampNumber(cycleElapsed / cycleDuration, 0, 1);
+  const cycleProgress = clampNumber(cycleElapsed / flipDuration, 0, 1);
   const easedProgress = easeOutCubic(cycleProgress);
   const startAngles = config.startAngles;
   const endAngles = config.endAngles;
@@ -375,6 +384,11 @@ function normalizePresentationConfig(
       ),
       frameRate,
       mode: "flip",
+      playbackIntervalSeconds: clampNumber(
+        config.playbackIntervalSeconds,
+        MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
+        MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
+      ),
       quality,
       startAngles: normalizePresentationEulerAngles(config.startAngles),
     };
