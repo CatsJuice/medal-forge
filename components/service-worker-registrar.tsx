@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 const SERVICE_WORKER_PATH = "/sw.js";
 const PRECACHE_MESSAGE_TYPE = "MEDAL_FORGE_PRECACHE_URLS";
+const CONTROLLER_RELOAD_KEY = "medal-forge-sw-controller-reload-at";
 
 function isCacheableSameOriginUrl(value: string) {
   try {
@@ -20,6 +21,7 @@ function isCacheableSameOriginUrl(value: string) {
       url.pathname.startsWith("/_next/") ||
       url.pathname.startsWith("/material-previews/") ||
       url.pathname.startsWith("/openusd/") ||
+      url.pathname.startsWith("/vendor/") ||
       url.pathname.startsWith("/api/showcase") ||
       url.pathname.startsWith("/work/")
     );
@@ -79,6 +81,24 @@ function schedulePrecache(registration: ServiceWorkerRegistration) {
   globalThis.setTimeout(run, 1000);
 }
 
+function reloadAfterServiceWorkerUpdate() {
+  try {
+    const lastReload = Number(
+      window.sessionStorage.getItem(CONTROLLER_RELOAD_KEY) ?? 0,
+    );
+
+    if (Date.now() - lastReload < 5000) {
+      return;
+    }
+
+    window.sessionStorage.setItem(CONTROLLER_RELOAD_KEY, String(Date.now()));
+  } catch {
+    // sessionStorage can be blocked; reloading is still the safest recovery.
+  }
+
+  window.location.reload();
+}
+
 export function ServiceWorkerRegistrar() {
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
@@ -90,6 +110,20 @@ export function ServiceWorkerRegistrar() {
     }
 
     let isCancelled = false;
+    const hadController = Boolean(navigator.serviceWorker.controller);
+
+    function handleControllerChange() {
+      if (!hadController || isCancelled) {
+        return;
+      }
+
+      reloadAfterServiceWorkerUpdate();
+    }
+
+    navigator.serviceWorker.addEventListener(
+      "controllerchange",
+      handleControllerChange,
+    );
 
     async function registerServiceWorker() {
       try {
@@ -105,6 +139,7 @@ export function ServiceWorkerRegistrar() {
         }
 
         schedulePrecache(registration);
+        void registration.update().catch(() => undefined);
 
         navigator.serviceWorker.ready
           .then((readyRegistration) => {
@@ -127,6 +162,10 @@ export function ServiceWorkerRegistrar() {
 
     return () => {
       isCancelled = true;
+      navigator.serviceWorker.removeEventListener(
+        "controllerchange",
+        handleControllerChange,
+      );
       window.removeEventListener("load", registerServiceWorker);
     };
   }, []);

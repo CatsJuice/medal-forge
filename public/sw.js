@@ -1,7 +1,8 @@
-const APP_VERSION = "2026-06-28-v3";
+const APP_VERSION = "2026-06-28-v4";
 const CORE_CACHE = `medal-forge-core-${APP_VERSION}`;
 const RUNTIME_CACHE = `medal-forge-runtime-${APP_VERSION}`;
 const PRECACHE_MESSAGE_TYPE = "MEDAL_FORGE_PRECACHE_URLS";
+const LEGACY_EXPORT_PATH_PREFIXES = ["/api/ffmpeg-core/", "/ffmpeg/"];
 
 const CORE_ASSETS = [
   "/",
@@ -14,6 +15,7 @@ const CORE_ASSETS = [
   "/material-previews/white-ceramic.svg",
   "/openusd/openusd_pxr_wasm.js",
   "/openusd/openusd_pxr_wasm.wasm",
+  "/vendor/prores-encoder.esm.js",
 ];
 
 function isSameOrigin(url) {
@@ -36,12 +38,28 @@ function isStaticAssetRequest(request, url) {
     url.pathname.startsWith("/_next/static/") ||
     url.pathname.startsWith("/material-previews/") ||
     url.pathname.startsWith("/openusd/") ||
+    url.pathname.startsWith("/vendor/") ||
     request.destination === "font" ||
     request.destination === "image" ||
     request.destination === "script" ||
     request.destination === "style" ||
     request.destination === "worker"
   );
+}
+
+function isLegacyExportRequest(request) {
+  try {
+    const url = new URL(request.url);
+
+    return (
+      isSameOrigin(url) &&
+      LEGACY_EXPORT_PATH_PREFIXES.some((prefix) =>
+        url.pathname.startsWith(prefix),
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function putInCache(cacheName, request, response) {
@@ -148,6 +166,27 @@ async function precacheCoreAssets() {
   );
 }
 
+async function purgeLegacyExportCacheEntries() {
+  const cacheNames = await caches.keys();
+
+  await Promise.all(
+    cacheNames.map(async (cacheName) => {
+      if (!cacheName.startsWith("medal-forge-")) {
+        return;
+      }
+
+      const cache = await caches.open(cacheName);
+      const requests = await cache.keys();
+
+      await Promise.all(
+        requests
+          .filter((request) => isLegacyExportRequest(request))
+          .map((request) => cache.delete(request)),
+      );
+    }),
+  );
+}
+
 async function precacheUrls(urls) {
   const cache = await caches.open(RUNTIME_CACHE);
 
@@ -197,6 +236,7 @@ self.addEventListener("activate", (event) => {
             .map((cacheName) => caches.delete(cacheName)),
         ),
       )
+      .then(() => purgeLegacyExportCacheEntries())
       .then(() => self.clients.claim()),
   );
 });
@@ -239,6 +279,11 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith("/api/")) {
     event.respondWith(apiNetworkFirst(request));
+    return;
+  }
+
+  if (url.pathname.startsWith("/vendor/")) {
+    event.respondWith(networkFirst(request));
     return;
   }
 
