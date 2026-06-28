@@ -21,11 +21,16 @@ import * as THREE from "three";
 import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
 import {
   DEFAULT_PRESENTATION_DURATION_SECONDS,
+  DEFAULT_PRESENTATION_FLIP_END_ANGLES,
   DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
-  DEFAULT_PRESENTATION_FLIP_TURNS,
+  DEFAULT_PRESENTATION_FLIP_START_ANGLES,
   DEFAULT_PRESENTATION_FRAME_RATE,
   DEFAULT_PRESENTATION_QUALITY,
   DEFAULT_PRESENTATION_SPIN_SPEEDS,
+  MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
+  MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+  MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
+  MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   PRESENTATION_EXPORT_OPTIONS,
   PRESENTATION_QUALITY_OPTIONS,
   getCompatiblePresentationFrameRate,
@@ -33,6 +38,7 @@ import {
   getPresentationFrameRateOptions,
   getPresentationQualityOption,
   getPresentationRotation,
+  type PresentationEulerAngles,
   type PresentationExportConfig,
   type PresentationExportFormat,
   type PresentationFrameRate,
@@ -66,6 +72,7 @@ interface PresentationSavePickerWindow extends Window {
 }
 
 interface NumberFieldProps {
+  ariaLabel?: string;
   label: string;
   max?: number;
   min?: number;
@@ -89,6 +96,7 @@ const MODE_OPTIONS: Array<{ label: string; value: PresentationMode }> = [
 const PRESENTATION_DIALOG_EXIT_MS = 260;
 
 function NumberField({
+  ariaLabel,
   label,
   max,
   min,
@@ -102,6 +110,7 @@ function NumberField({
       <span>{label}</span>
       <span className="presentation-number-field">
         <input
+          aria-label={ariaLabel}
           inputMode="decimal"
           max={max}
           min={min}
@@ -257,7 +266,13 @@ export function PresentationModeDialog({
   const [spinSpeeds, setSpinSpeeds] = useState<PresentationSpinSpeeds>(
     DEFAULT_PRESENTATION_SPIN_SPEEDS,
   );
-  const [flipTurns, setFlipTurns] = useState(DEFAULT_PRESENTATION_FLIP_TURNS);
+  const [flipStartAngles, setFlipStartAngles] =
+    useState<PresentationEulerAngles>(
+      DEFAULT_PRESENTATION_FLIP_START_ANGLES,
+    );
+  const [flipEndAngles, setFlipEndAngles] = useState<PresentationEulerAngles>(
+    DEFAULT_PRESENTATION_FLIP_END_ANGLES,
+  );
   const [flipSpeed, setFlipSpeed] = useState(
     DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
   );
@@ -278,11 +293,12 @@ export function PresentationModeDialog({
     if (mode === "flip") {
       return {
         durationSeconds,
+        endAngles: flipEndAngles,
         flipSpeedDegPerSecond: flipSpeed,
-        flipTurns,
         frameRate,
         mode,
         quality,
+        startAngles: flipStartAngles,
       };
     }
 
@@ -295,8 +311,9 @@ export function PresentationModeDialog({
     };
   }, [
     durationSeconds,
+    flipEndAngles,
     flipSpeed,
-    flipTurns,
+    flipStartAngles,
     frameRate,
     mode,
     quality,
@@ -363,13 +380,34 @@ export function PresentationModeDialog({
     }));
   }
 
+  function updateFlipStartAngle(
+    axis: keyof PresentationEulerAngles,
+    value: number,
+  ) {
+    setFlipStartAngles((current) => ({
+      ...current,
+      [axis]: value,
+    }));
+  }
+
+  function updateFlipEndAngle(
+    axis: keyof PresentationEulerAngles,
+    value: number,
+  ) {
+    setFlipEndAngles((current) => ({
+      ...current,
+      [axis]: value,
+    }));
+  }
+
   function resetCurrentMode() {
     if (mode === "spin") {
       setSpinSpeeds(DEFAULT_PRESENTATION_SPIN_SPEEDS);
       return;
     }
 
-    setFlipTurns(DEFAULT_PRESENTATION_FLIP_TURNS);
+    setFlipStartAngles(DEFAULT_PRESENTATION_FLIP_START_ANGLES);
+    setFlipEndAngles(DEFAULT_PRESENTATION_FLIP_END_ANGLES);
     setFlipSpeed(DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND);
   }
 
@@ -498,22 +536,88 @@ export function PresentationModeDialog({
                 ) : (
                   <>
                     <NumberField
-                      label="Turns"
-                      max={12}
-                      min={1}
-                      onChange={setFlipTurns}
-                      step={1}
-                      value={flipTurns}
-                    />
-                    <NumberField
                       label="Speed"
-                      max={1440}
-                      min={30}
+                      max={MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND}
+                      min={MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND}
                       onChange={setFlipSpeed}
                       step={30}
                       unit="deg/s"
                       value={flipSpeed}
                     />
+                    <div className="presentation-angle-group">
+                      <span className="presentation-angle-group-title">
+                        Initial angle
+                      </span>
+                      <div className="presentation-angle-grid">
+                        <NumberField
+                          ariaLabel="Initial X angle"
+                          label="X"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipStartAngle("x", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipStartAngles.x}
+                        />
+                        <NumberField
+                          ariaLabel="Initial Y angle"
+                          label="Y"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipStartAngle("y", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipStartAngles.y}
+                        />
+                        <NumberField
+                          ariaLabel="Initial Z angle"
+                          label="Z"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipStartAngle("z", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipStartAngles.z}
+                        />
+                      </div>
+                    </div>
+                    <div className="presentation-angle-group">
+                      <span className="presentation-angle-group-title">
+                        Final angle
+                      </span>
+                      <div className="presentation-angle-grid">
+                        <NumberField
+                          ariaLabel="Final X angle"
+                          label="X"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipEndAngle("x", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipEndAngles.x}
+                        />
+                        <NumberField
+                          ariaLabel="Final Y angle"
+                          label="Y"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipEndAngle("y", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipEndAngles.y}
+                        />
+                        <NumberField
+                          ariaLabel="Final Z angle"
+                          label="Z"
+                          max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
+                          onChange={(value) => updateFlipEndAngle("z", value)}
+                          step={5}
+                          unit="deg"
+                          value={flipEndAngles.z}
+                        />
+                      </div>
+                    </div>
                   </>
                 )}
               </div>

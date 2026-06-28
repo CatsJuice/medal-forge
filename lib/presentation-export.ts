@@ -20,6 +20,12 @@ export interface PresentationSpinSpeeds {
   z: number;
 }
 
+export interface PresentationEulerAngles {
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface PresentationBaseExportConfig {
   durationSeconds: number;
   frameRate: PresentationFrameRate;
@@ -35,9 +41,10 @@ export interface PresentationSpinExportConfig
 
 export interface PresentationFlipExportConfig
   extends PresentationBaseExportConfig {
+  endAngles: PresentationEulerAngles;
   flipSpeedDegPerSecond: number;
-  flipTurns: number;
   mode: "flip";
+  startAngles: PresentationEulerAngles;
 }
 
 export type PresentationExportConfig =
@@ -108,7 +115,10 @@ const GIF_COLOR_BIN_COUNT = 32 * 32 * 32;
 const DEFAULT_EXPORT_DURATION_SECONDS = 5;
 const MIN_EXPORT_DURATION_SECONDS = 1;
 const MAX_EXPORT_DURATION_SECONDS = 12;
-const MIN_FLIP_SPEED_DEG_PER_SECOND = 30;
+export const MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 30;
+export const MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 1440;
+export const MIN_PRESENTATION_FLIP_ANGLE_DEGREES = -3600;
+export const MAX_PRESENTATION_FLIP_ANGLE_DEGREES = 3600;
 
 let presentationProResModulePromise:
   | Promise<PresentationProResModule>
@@ -139,7 +149,16 @@ export const DEFAULT_PRESENTATION_SPIN_SPEEDS: PresentationSpinSpeeds = {
   z: 0,
 };
 
-export const DEFAULT_PRESENTATION_FLIP_TURNS = 1;
+export const DEFAULT_PRESENTATION_FLIP_START_ANGLES: PresentationEulerAngles = {
+  x: THREE.MathUtils.radToDeg(HOME_PREVIEW_ROTATION_X),
+  y: THREE.MathUtils.radToDeg(HOME_PREVIEW_ROTATION_Y),
+  z: 0,
+};
+export const DEFAULT_PRESENTATION_FLIP_END_ANGLES: PresentationEulerAngles = {
+  x: DEFAULT_PRESENTATION_FLIP_START_ANGLES.x,
+  y: DEFAULT_PRESENTATION_FLIP_START_ANGLES.y + 360,
+  z: DEFAULT_PRESENTATION_FLIP_START_ANGLES.z,
+};
 export const DEFAULT_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND = 360;
 export const DEFAULT_PRESENTATION_DURATION_SECONDS =
   DEFAULT_EXPORT_DURATION_SECONDS;
@@ -254,6 +273,7 @@ export function getCompatiblePresentationFrameRate(
 export function getPresentationRotation(
   config: PresentationExportConfig,
   elapsedSeconds: number,
+  options: { loop?: boolean } = {},
 ) {
   if (config.mode === "spin") {
     return {
@@ -267,19 +287,31 @@ export function getPresentationRotation(
     };
   }
 
-  const flipTurns = Math.max(1, Math.round(config.flipTurns));
-  const speed = Math.max(
-    MIN_FLIP_SPEED_DEG_PER_SECOND,
-    Math.abs(config.flipSpeedDegPerSecond),
+  const cycleDuration = Math.max(
+    0.1,
+    getPresentationFlipAngleTravel(config.startAngles, config.endAngles) /
+      Math.max(
+        MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+        Math.abs(config.flipSpeedDegPerSecond),
+      ),
   );
-  const periodSeconds = Math.max(0.1, (flipTurns * 360) / speed);
-  const cycleProgress = (elapsedSeconds % periodSeconds) / periodSeconds;
+  const loop = options.loop ?? true;
+  const cycleElapsed = loop ? elapsedSeconds % cycleDuration : elapsedSeconds;
+  const cycleProgress = clampNumber(cycleElapsed / cycleDuration, 0, 1);
   const easedProgress = easeOutCubic(cycleProgress);
+  const startAngles = config.startAngles;
+  const endAngles = config.endAngles;
 
   return {
-    x: HOME_PREVIEW_ROTATION_X,
-    y: HOME_PREVIEW_ROTATION_Y + Math.PI * 2 * flipTurns * easedProgress,
-    z: 0,
+    x: THREE.MathUtils.degToRad(
+      THREE.MathUtils.lerp(startAngles.x, endAngles.x, easedProgress),
+    ),
+    y: THREE.MathUtils.degToRad(
+      THREE.MathUtils.lerp(startAngles.y, endAngles.y, easedProgress),
+    ),
+    z: THREE.MathUtils.degToRad(
+      THREE.MathUtils.lerp(startAngles.z, endAngles.z, easedProgress),
+    ),
   };
 }
 
@@ -335,15 +367,16 @@ function normalizePresentationConfig(
   if (config.mode === "flip") {
     return {
       durationSeconds,
+      endAngles: normalizePresentationEulerAngles(config.endAngles),
       flipSpeedDegPerSecond: clampNumber(
         Math.abs(config.flipSpeedDegPerSecond),
-        MIN_FLIP_SPEED_DEG_PER_SECOND,
-        1440,
+        MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+        MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
       ),
-      flipTurns: clampNumber(Math.round(config.flipTurns), 1, 12),
       frameRate,
       mode: "flip",
       quality,
+      startAngles: normalizePresentationEulerAngles(config.startAngles),
     };
   }
 
@@ -606,6 +639,39 @@ function renderPresentationFrame(
   context.readContext.clearRect(0, 0, context.width, context.height);
   context.readContext.drawImage(bitmap, 0, 0);
   bitmap.close();
+}
+
+function normalizePresentationEulerAngles(
+  angles: PresentationEulerAngles,
+): PresentationEulerAngles {
+  return {
+    x: clampNumber(
+      angles.x,
+      MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
+      MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
+    ),
+    y: clampNumber(
+      angles.y,
+      MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
+      MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
+    ),
+    z: clampNumber(
+      angles.z,
+      MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
+      MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
+    ),
+  };
+}
+
+function getPresentationFlipAngleTravel(
+  startAngles: PresentationEulerAngles,
+  endAngles: PresentationEulerAngles,
+) {
+  return Math.max(
+    Math.abs(endAngles.x - startAngles.x),
+    Math.abs(endAngles.y - startAngles.y),
+    Math.abs(endAngles.z - startAngles.z),
+  );
 }
 
 function quantizeGifFrame(imageData: ImageData) {
