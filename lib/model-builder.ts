@@ -3,7 +3,10 @@
 import * as THREE from "three";
 import { TessellateModifier } from "three/examples/jsm/modifiers/TessellateModifier.js";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
-import { DEFAULT_DOME_SETTINGS } from "@/lib/defaults";
+import {
+  DEFAULT_DOME_SETTINGS,
+  DEFAULT_MODEL_QUALITY_SETTINGS,
+} from "@/lib/defaults";
 import { getMaterialPreset } from "@/lib/materials";
 import { resolveShapeSettings } from "@/lib/shape-settings";
 import { summarizeSvgPaths } from "@/lib/svg-summary";
@@ -28,7 +31,26 @@ interface ShapeBounds {
   height: number;
 }
 
+interface AdaptiveCurveSamplingOptions {
+  maxSegments: number;
+  minSegments: number;
+  tolerance: number;
+}
+
+export interface MedalBuildOptions {
+  adaptiveCurveSampling?: AdaptiveCurveSamplingOptions;
+  maxBevelSegments?: number;
+  maxCurveSegments?: number;
+}
+
+type AdaptiveCurve = THREE.Curve<THREE.Vector2> & {
+  isLineCurve?: boolean;
+  isLineCurve3?: boolean;
+};
+
 const SVG_LAYER_STEP = 0.004;
+const MODEL_QUALITY_TOLERANCE_PRECISION_PRODUCT = 0.036;
+const POINT_EPSILON = 1e-8;
 const ATTR_PATTERN = /([\w:-]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
 const SHAPE_TAG_PATTERN =
   /<(path|rect|circle|ellipse|polygon|polyline|line)\b[^>]*(?:\/>|>[\s\S]*?<\/\1>)/gi;
@@ -280,6 +302,234 @@ function computeBounds(records: SvgShapeRecord[]): ShapeBounds {
   };
 }
 
+function pointsEqual(left: THREE.Vector2, right: THREE.Vector2) {
+  return left.distanceToSquared(right) <= POINT_EPSILON * POINT_EPSILON;
+}
+
+function pushUniquePoint(points: THREE.Vector2[], point: THREE.Vector2) {
+  const last = points.at(-1);
+
+  if (last && pointsEqual(last, point)) {
+    return;
+  }
+
+  points.push(point.clone());
+}
+
+function pointSegmentDistance(
+  point: THREE.Vector2,
+  start: THREE.Vector2,
+  end: THREE.Vector2,
+) {
+  const segmentX = end.x - start.x;
+  const segmentY = end.y - start.y;
+  const segmentLengthSq = segmentX * segmentX + segmentY * segmentY;
+
+  if (segmentLengthSq <= POINT_EPSILON * POINT_EPSILON) {
+    return point.distanceTo(start);
+  }
+
+  const projected =
+    ((point.x - start.x) * segmentX + (point.y - start.y) * segmentY) /
+    segmentLengthSq;
+  const clamped = Math.min(1, Math.max(0, projected));
+  const closestX = start.x + segmentX * clamped;
+  const closestY = start.y + segmentY * clamped;
+  const deltaX = point.x - closestX;
+  const deltaY = point.y - closestY;
+
+  return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+}
+
+function getCurveDepth(segmentCount: number) {
+  return Math.max(0, Math.ceil(Math.log2(Math.max(1, segmentCount))));
+}
+
+function appendAdaptiveCurvePoints(
+  curve: AdaptiveCurve,
+  startT: number,
+  endT: number,
+  startPoint: THREE.Vector2,
+  endPoint: THREE.Vector2,
+  points: THREE.Vector2[],
+  options: AdaptiveCurveSamplingOptions,
+  depth: number,
+) {
+  const midT = (startT + endT) / 2;
+  const midPoint = curve.getPoint(midT);
+  const minDepth = getCurveDepth(options.minSegments);
+  const maxDepth = getCurveDepth(options.maxSegments);
+  const isFlatEnough =
+    pointSegmentDistance(midPoint, startPoint, endPoint) <= options.tolerance;
+
+  if ((isFlatEnough && depth >= minDepth) || depth >= maxDepth) {
+    pushUniquePoint(points, endPoint);
+    return;
+  }
+
+  appendAdaptiveCurvePoints(
+    curve,
+    startT,
+    midT,
+    startPoint,
+    midPoint,
+    points,
+    options,
+    depth + 1,
+  );
+  appendAdaptiveCurvePoints(
+    curve,
+    midT,
+    endT,
+    midPoint,
+    endPoint,
+    points,
+    options,
+    depth + 1,
+  );
+}
+
+function getAdaptiveCurvePoints(
+  curve: AdaptiveCurve,
+  options: AdaptiveCurveSamplingOptions,
+) {
+  const startPoint = curve.getPoint(0);
+  const endPoint = curve.getPoint(1);
+  const points = [startPoint.clone()];
+
+  if (curve.isLineCurve || curve.isLineCurve3) {
+    pushUniquePoint(points, endPoint);
+    return points;
+  }
+
+  appendAdaptiveCurvePoints(
+    curve,
+    0,
+    1,
+    startPoint,
+    endPoint,
+    points,
+    options,
+    0,
+  );
+
+  return points;
+}
+
+function getAdaptivePathPoints(
+  path: THREE.Path,
+  options: AdaptiveCurveSamplingOptions,
+) {
+  const points: THREE.Vector2[] = [];
+
+  for (const curve of path.curves as AdaptiveCurve[]) {
+    for (const point of getAdaptiveCurvePoints(curve, options)) {
+      pushUniquePoint(points, point);
+    }
+  }
+
+  const first = points[0];
+  const last = points.at(-1);
+
+  if (first && last && pointsEqual(first, last)) {
+    points.pop();
+  }
+
+  return points;
+}
+
+function createLinearPath(points: THREE.Vector2[]) {
+  const path = new THREE.Path();
+  const first = points[0];
+
+  if (!first) {
+    return path;
+  }
+
+  path.moveTo(first.x, first.y);
+
+  for (const point of points.slice(1)) {
+    path.lineTo(point.x, point.y);
+  }
+
+  return path;
+}
+
+function createAdaptiveShape(
+  shape: THREE.Shape,
+  options: AdaptiveCurveSamplingOptions,
+) {
+  const contour = getAdaptivePathPoints(shape, options);
+
+  if (contour.length < 3) {
+    return shape;
+  }
+
+  const adaptiveShape = new THREE.Shape(contour);
+
+  adaptiveShape.holes = shape.holes.flatMap((hole) => {
+    const points = getAdaptivePathPoints(hole, options);
+
+    return points.length >= 3 ? [createLinearPath(points)] : [];
+  });
+
+  return adaptiveShape;
+}
+
+function getQualityShape(
+  shape: THREE.Shape,
+  scale: number,
+  options: MedalBuildOptions,
+) {
+  const sampling = options.adaptiveCurveSampling;
+
+  if (!sampling) {
+    return shape;
+  }
+
+  return createAdaptiveShape(shape, {
+    ...sampling,
+    tolerance: sampling.tolerance / Math.max(scale, 0.000001),
+  });
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function createQualityBuildOptions(settings: MedalSettings): MedalBuildOptions {
+  const quality = {
+    ...DEFAULT_MODEL_QUALITY_SETTINGS,
+    ...settings.quality,
+  };
+  const curveSegments = clampInteger(quality.curveSegments, 4, 96);
+  const curvePrecision = clampInteger(quality.curvePrecision, 2, 64);
+
+  return {
+    adaptiveCurveSampling: {
+      maxSegments: curveSegments,
+      minSegments: 1,
+      tolerance: MODEL_QUALITY_TOLERANCE_PRECISION_PRODUCT / curvePrecision,
+    },
+    maxBevelSegments: clampInteger(quality.bevelSegments, 0, 12),
+    maxCurveSegments: curveSegments,
+  };
+}
+
+function resolveBuildOptions(
+  settings: MedalSettings,
+  options?: MedalBuildOptions,
+) {
+  const qualityOptions = createQualityBuildOptions(settings);
+
+  return {
+    ...qualityOptions,
+    ...options,
+    adaptiveCurveSampling:
+      options?.adaptiveCurveSampling ?? qualityOptions.adaptiveCurveSampling,
+  };
+}
+
 function createSvgGeometry(
   shape: THREE.Shape,
   bounds: ShapeBounds,
@@ -289,16 +539,26 @@ function createSvgGeometry(
   curveSegments: number,
   bevelSegments: number,
   depthSteps: number,
+  options: MedalBuildOptions,
 ): THREE.ExtrudeGeometry {
   const scaledDepth = Math.max(thickness / scale, 0.001);
   const scaledBevel = Math.min(bevel / scale, scaledDepth * 0.45);
-  const geometry = new THREE.ExtrudeGeometry(shape, {
+  const effectiveShape = getQualityShape(shape, scale, options);
+  const effectiveCurveSegments = Math.max(
+    1,
+    Math.min(curveSegments, options.maxCurveSegments ?? curveSegments),
+  );
+  const effectiveBevelSegments = Math.max(
+    0,
+    Math.min(bevelSegments, options.maxBevelSegments ?? bevelSegments),
+  );
+  const geometry = new THREE.ExtrudeGeometry(effectiveShape, {
     depth: scaledDepth,
-    bevelEnabled: scaledBevel > 0.0001 && bevelSegments > 0,
+    bevelEnabled: scaledBevel > 0.0001 && effectiveBevelSegments > 0,
     bevelSize: scaledBevel,
     bevelThickness: scaledBevel,
-    bevelSegments: scaledBevel > 0.0001 ? bevelSegments : 0,
-    curveSegments,
+    bevelSegments: scaledBevel > 0.0001 ? effectiveBevelSegments : 0,
+    curveSegments: options.adaptiveCurveSampling ? 1 : effectiveCurveSegments,
     steps: depthSteps,
   });
 
@@ -408,6 +668,7 @@ export function buildMedalGroup(
   svgText: string,
   settings: MedalSettings,
   highlightedPathIndex: number | null = null,
+  options?: MedalBuildOptions,
 ): THREE.Group {
   const group = new THREE.Group();
   group.name = "medal-forge-model";
@@ -427,6 +688,7 @@ export function buildMedalGroup(
   const bounds = computeBounds(records);
   const maxDimension = Math.max(bounds.width, bounds.height, 1);
   const scale = settings.modelSize / maxDimension;
+  const buildOptions = resolveBuildOptions(settings, options);
 
   for (const record of records) {
     const shapeSettings = resolveShapeSettings(
@@ -449,6 +711,7 @@ export function buildMedalGroup(
         shapeSettings.curveSegments,
         shapeSettings.bevelSegments,
         shapeSettings.depthSteps,
+        buildOptions,
       ),
       settings,
     );

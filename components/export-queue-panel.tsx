@@ -105,7 +105,30 @@ export function ExportQueuePanel({ variant = "floating" }: ExportQueuePanelProps
   const queue = useExportQueueSnapshot();
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const knownItemIdsRef = useRef<Set<string> | null>(null);
   const hasItems = queue.items.length > 0;
+
+  useEffect(() => {
+    if (variant !== "toolbar") {
+      return;
+    }
+
+    const knownItemIds = knownItemIdsRef.current;
+    const currentItemIds = new Set(queue.items.map((item) => item.id));
+
+    if (!knownItemIds) {
+      knownItemIdsRef.current = currentItemIds;
+      return;
+    }
+
+    const hasNewItem = queue.items.some((item) => !knownItemIds.has(item.id));
+
+    knownItemIdsRef.current = currentItemIds;
+
+    if (hasNewItem) {
+      setIsOpen(true);
+    }
+  }, [queue.items, variant]);
 
   useEffect(() => {
     if (!isOpen || variant !== "toolbar") {

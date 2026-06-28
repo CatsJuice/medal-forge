@@ -19,7 +19,10 @@ import {
   unzipSync,
   zipSync,
 } from "three/examples/jsm/libs/fflate.module.js";
-import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
+import {
+  buildMedalGroup,
+  disposeObject3D,
+} from "@/lib/model-builder";
 import type { ExportProgressUpdate } from "@/lib/export-worker-types";
 import type { MedalSettings } from "@/lib/types";
 
@@ -52,6 +55,21 @@ const USD_GEOMETRY_REFERENCE_PATTERN =
   /@\.\/geometries\/([^@]+)\.usda@/g;
 const OPENUSD_CORE_SCRIPT_PATH = "/openusd/openusd_pxr_wasm.js";
 const OPENUSD_CORE_WASM_PATH = "/openusd/openusd_pxr_wasm.wasm";
+const TEXTURE_MATERIAL_KEYS = [
+  "alphaMap",
+  "aoMap",
+  "bumpMap",
+  "displacementMap",
+  "emissiveMap",
+  "envMap",
+  "lightMap",
+  "map",
+  "metalnessMap",
+  "normalMap",
+  "roughnessMap",
+  "specularColorMap",
+  "specularIntensityMap",
+] as const;
 
 interface UsdSurfaceBucket {
   geometry: BufferGeometry;
@@ -73,6 +91,13 @@ interface UsdLayer {
   layerKey: string;
   order: number;
 }
+
+interface UsdSurfaceBucketOptions {
+  includeUvs: boolean;
+}
+
+type TextureBearingMaterial = Material &
+  Partial<Record<(typeof TEXTURE_MATERIAL_KEYS)[number], unknown>>;
 
 let openUsdPxrPromise: Promise<OpenUsdPxr> | null = null;
 
@@ -437,6 +462,9 @@ function makeUsdCompatibleMeshes(group: Object3D) {
   });
 
   const includeBackByMesh = createUsdBackfaceInclusion(meshes);
+  const surfaceOptions: UsdSurfaceBucketOptions = {
+    includeUvs: meshes.some(meshUsesTexture),
+  };
 
   for (const mesh of meshes) {
     if (!mesh.visible || !mesh.parent) {
@@ -446,6 +474,7 @@ function makeUsdCompatibleMeshes(group: Object3D) {
     const surfaceBuckets = createUsdSurfaceBuckets(
       mesh,
       includeBackByMesh.get(mesh) ?? true,
+      surfaceOptions,
       (material) => {
         const existing = materialClones.get(material);
 
@@ -585,11 +614,16 @@ function getGeometryZBounds(geometry: BufferGeometry) {
 function createUsdSurfaceBuckets(
   mesh: Mesh,
   includeBack: boolean,
+  options: UsdSurfaceBucketOptions,
   getUsdMaterial: (material: Material) => Material,
 ): UsdSurfaceBucket[] {
   const source = mesh.geometry.index
     ? mesh.geometry.toNonIndexed()
     : mesh.geometry.clone();
+
+  if (!options.includeUvs) {
+    removeUvAttributes(source);
+  }
 
   if (!source.getAttribute("normal")) {
     source.computeVertexNormals();
@@ -654,6 +688,28 @@ function getTriangleMaterialIndex(geometry: BufferGeometry, triangle: number) {
   }
 
   return 0;
+}
+
+function removeUvAttributes(geometry: BufferGeometry) {
+  for (const name of Object.keys(geometry.attributes)) {
+    if (name === "uv" || name.startsWith("uv")) {
+      geometry.deleteAttribute(name);
+    }
+  }
+}
+
+function meshUsesTexture(mesh: Mesh) {
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+  return materials.some(materialUsesTexture);
+}
+
+function materialUsesTexture(material: Material) {
+  const textureBearingMaterial = material as TextureBearingMaterial;
+
+  return TEXTURE_MATERIAL_KEYS.some((key) =>
+    Boolean(textureBearingMaterial[key]),
+  );
 }
 
 function classifyTriangleSurface(

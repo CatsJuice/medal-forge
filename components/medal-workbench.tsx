@@ -62,6 +62,7 @@ import type {
   DomeSettings,
   MaterialId,
   MedalSettings,
+  ModelQualitySettings,
   ShapeSettingsPatch,
   ShapeSvgAdjustments,
   ShapeWindingMode,
@@ -643,6 +644,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
     ? resolveShapeSettings(settings, activeSummary.pathIndex, activeSummary)
     : null;
   const activeDomeSettings = settings.dome ?? DEFAULT_SETTINGS.dome;
+  const activeQualitySettings = settings.quality ?? DEFAULT_SETTINGS.quality;
   const currentSignature = useMemo(
     () =>
       createWorkPayloadSignature({
@@ -892,6 +894,20 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
       dome: {
         ...DEFAULT_SETTINGS.dome,
         ...current.dome,
+        [key]: value,
+      },
+    }));
+  }
+
+  function updateQualitySetting<K extends keyof ModelQualitySettings>(
+    key: K,
+    value: ModelQualitySettings[K],
+  ) {
+    setSettings((current) => ({
+      ...current,
+      quality: {
+        ...DEFAULT_SETTINGS.quality,
+        ...current.quality,
         [key]: value,
       },
     }));
@@ -2041,6 +2057,45 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                 </div>
               </section>
             ) : null}
+
+            <section className="panel-section">
+              <div className="section-title">
+                <span>Quality</span>
+                <SlidersHorizontal size={14} />
+              </div>
+              <div className="control-stack">
+                <RangeControl
+                  label="Curve segments"
+                  max={96}
+                  min={4}
+                  onChange={(value) =>
+                    updateQualitySetting("curveSegments", value)
+                  }
+                  step={1}
+                  value={activeQualitySettings.curveSegments}
+                />
+                <RangeControl
+                  label="Curve precision"
+                  max={64}
+                  min={2}
+                  onChange={(value) =>
+                    updateQualitySetting("curvePrecision", value)
+                  }
+                  step={1}
+                  value={activeQualitySettings.curvePrecision}
+                />
+                <RangeControl
+                  label="Bevel segments"
+                  max={12}
+                  min={0}
+                  onChange={(value) =>
+                    updateQualitySetting("bevelSegments", value)
+                  }
+                  step={1}
+                  value={activeQualitySettings.bevelSegments}
+                />
+              </div>
+            </section>
 
             <section className="panel-section">
               <div className="section-title section-title-with-action">

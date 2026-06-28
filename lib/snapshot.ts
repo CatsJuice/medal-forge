@@ -15,7 +15,7 @@ import {
 
 const SNAPSHOT_WIDTH = 320;
 const SNAPSHOT_HEIGHT = 320;
-const SNAPSHOT_RENDER_VERSION = 15;
+const SNAPSHOT_RENDER_VERSION = 16;
 const SNAPSHOT_CAMERA_FOV = 38;
 
 export function getSnapshotSourceSignature(document: WorkDocument) {

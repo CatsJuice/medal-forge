@@ -1,5 +1,6 @@
 import type {
   MedalSettings,
+  ModelQualitySettings,
   WorkDocument,
   WorkSnapshot,
   WorkSvgAsset,
@@ -222,7 +223,38 @@ export function normalizeMedalSettings(settings: MedalSettings): MedalSettings {
       ...DEFAULT_SETTINGS.dome,
       ...settings.dome,
     },
+    quality: normalizeModelQualitySettings(settings),
     shapeSettings: settings.shapeSettings ?? {},
+  };
+}
+
+function normalizeModelQualitySettings(
+  settings: MedalSettings,
+): ModelQualitySettings {
+  const legacyExport = (
+    settings as MedalSettings & {
+      export?: {
+        usdzBevelSegments?: number;
+        usdzCurvePrecision?: number;
+        usdzCurveSegments?: number;
+      };
+    }
+  ).export;
+
+  return {
+    ...DEFAULT_SETTINGS.quality,
+    bevelSegments:
+      legacyExport?.usdzBevelSegments ??
+      settings.quality?.bevelSegments ??
+      DEFAULT_SETTINGS.quality.bevelSegments,
+    curvePrecision:
+      legacyExport?.usdzCurvePrecision ??
+      settings.quality?.curvePrecision ??
+      DEFAULT_SETTINGS.quality.curvePrecision,
+    curveSegments:
+      legacyExport?.usdzCurveSegments ??
+      settings.quality?.curveSegments ??
+      DEFAULT_SETTINGS.quality.curveSegments,
   };
 }
 
@@ -271,6 +303,8 @@ function isMedalSettings(value: unknown): value is MedalSettings {
 
   const canvas = value.canvas;
   const dome = value.dome;
+  const quality = value.quality;
+  const legacyExport = value.export;
 
   return (
     typeof value.modelSize === "number" &&
@@ -284,6 +318,16 @@ function isMedalSettings(value: unknown): value is MedalSettings {
         typeof dome.depth === "number" &&
         typeof dome.radius === "number" &&
         typeof dome.segments === "number")) &&
+    (quality === undefined ||
+      (isRecord(quality) &&
+        typeof quality.bevelSegments === "number" &&
+        typeof quality.curvePrecision === "number" &&
+        typeof quality.curveSegments === "number")) &&
+    (legacyExport === undefined ||
+      (isRecord(legacyExport) &&
+        typeof legacyExport.usdzBevelSegments === "number" &&
+        typeof legacyExport.usdzCurvePrecision === "number" &&
+        typeof legacyExport.usdzCurveSegments === "number")) &&
     isRecord(value.shapeSettings)
   );
 }

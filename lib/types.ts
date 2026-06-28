@@ -21,6 +21,12 @@ export interface DomeSettings {
   segments: number;
 }
 
+export interface ModelQualitySettings {
+  bevelSegments: number;
+  curvePrecision: number;
+  curveSegments: number;
+}
+
 export interface ShapeSvgAdjustments {
   circleRadius?: number;
   rectWidth?: number;
@@ -50,6 +56,7 @@ export interface MedalSettings {
   modelSize: number;
   canvas: CanvasSettings;
   dome: DomeSettings;
+  quality: ModelQualitySettings;
   shapeSettings: Record<string, ShapeSettingsPatch>;
 }
 

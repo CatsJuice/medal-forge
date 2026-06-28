@@ -1,4 +1,9 @@
-import type { DomeSettings, MedalSettings, ShapeSettings } from "@/lib/types";
+import type {
+  DomeSettings,
+  MedalSettings,
+  ModelQualitySettings,
+  ShapeSettings,
+} from "@/lib/types";
 
 export const DEFAULT_SHAPE_SETTINGS: ShapeSettings = {
   thickness: 0.17,
@@ -24,6 +29,12 @@ export const DEFAULT_DOME_SETTINGS: DomeSettings = {
   segments: 22,
 };
 
+export const DEFAULT_MODEL_QUALITY_SETTINGS: ModelQualitySettings = {
+  bevelSegments: 2,
+  curvePrecision: 6,
+  curveSegments: 12,
+};
+
 export const DEFAULT_SETTINGS: MedalSettings = {
   modelSize: 4.8,
   canvas: {
@@ -32,6 +43,7 @@ export const DEFAULT_SETTINGS: MedalSettings = {
     showShadows: false,
   },
   dome: DEFAULT_DOME_SETTINGS,
+  quality: DEFAULT_MODEL_QUALITY_SETTINGS,
   shapeSettings: {},
 };
 
