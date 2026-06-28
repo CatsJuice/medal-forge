@@ -20,16 +20,38 @@ import {
   zipSync,
 } from "three/examples/jsm/libs/fflate.module.js";
 import { buildMedalGroup, disposeObject3D } from "@/lib/model-builder";
+import type { ExportProgressUpdate } from "@/lib/export-worker-types";
 import type { MedalSettings } from "@/lib/types";
 
 type GeometryAttribute = BufferAttribute | InterleavedBufferAttribute;
 type UsdSurfaceKind = "front" | "back" | "side";
 type UsdZipEntry = Uint8Array | [Uint8Array, { extra: Record<number, Uint8Array> }];
+type OpenUsdPxr = {
+  FS: {
+    deleteFile: (path: string) => void;
+    mkdirp: (path: string) => void;
+    readFile: (path: string) => unknown;
+  };
+  Sdf: {
+    Layer: {
+      CreateAnonymous: (name: string) => {
+        delete?: () => void;
+        Export: (path: string) => boolean;
+        ImportFromString: (text: string) => boolean;
+      };
+    };
+  };
+};
 
 const USD_GEOMETRY_FLOAT_PRECISION = 4;
+const USD_VERTEX_KEY_FLOAT_PRECISION = 6;
 const USDA_FLOAT_PATTERN =
   /(^|[^\w.])([-+]?(?:\d+\.\d*|\.\d+)(?:e[-+]?\d+)?|[-+]?\d+e[-+]?\d+)/gi;
 const USDA_COMMA_WHITESPACE_PATTERN = /,\s+/g;
+const USD_GEOMETRY_REFERENCE_PATTERN =
+  /@\.\/geometries\/([^@]+)\.usda@/g;
+const OPENUSD_CORE_SCRIPT_PATH = "/openusd/openusd_pxr_wasm.js";
+const OPENUSD_CORE_WASM_PATH = "/openusd/openusd_pxr_wasm.wasm";
 
 interface UsdSurfaceBucket {
   geometry: BufferGeometry;
@@ -39,8 +61,10 @@ interface UsdSurfaceBucket {
 
 interface UsdSurfaceBuildBucket {
   attributes: Map<string, number[]>;
+  indices: number[];
   material: Material;
   name: string;
+  vertexKeys: Map<string, number>;
 }
 
 interface UsdLayer {
@@ -50,6 +74,8 @@ interface UsdLayer {
   order: number;
 }
 
+let openUsdPxrPromise: Promise<OpenUsdPxr> | null = null;
+
 export type ModelExportFormat = "glb" | "usdz";
 
 export interface ModelExportOption {
@@ -57,6 +83,10 @@ export interface ModelExportOption {
   label: string;
   extension: string;
   mimeType: string;
+}
+
+export interface ModelExportOptions {
+  onProgress?: (progress: ExportProgressUpdate) => void;
 }
 
 export const MODEL_EXPORT_OPTIONS: ModelExportOption[] = [
@@ -102,23 +132,34 @@ export async function exportMedalModel(
   svgText: string,
   settings: MedalSettings,
   format: ModelExportFormat,
+  options: ModelExportOptions = {},
 ): Promise<Blob> {
+  reportExportProgress(options, 0.04, "building", "Building mesh");
   const group = buildMedalGroup(svgText, settings);
 
   try {
-    if (format === "usdz") {
-      return await exportGroupUsdz(group);
+    if (group.userData.isEmptyPlaceholder) {
+      throw new Error("No exportable SVG shapes found");
     }
 
-    return await exportGroupGlb(group);
+    if (format === "usdz") {
+      return await exportGroupUsdz(group, options);
+    }
+
+    return await exportGroupGlb(group, options);
   } finally {
     disposeObject3D(group);
   }
 }
 
-async function exportGroupGlb(group: Object3D): Promise<Blob> {
+async function exportGroupGlb(
+  group: Object3D,
+  options: ModelExportOptions,
+): Promise<Blob> {
   const exporter = new GLTFExporter();
+  reportExportProgress(options, 0.22, "exporting", "Writing GLB");
   const result = await exporter.parseAsync(group, { binary: true });
+  reportExportProgress(options, 0.92, "done", "Preparing download");
 
   if (result instanceof ArrayBuffer) {
     return new Blob([result], {
@@ -131,13 +172,25 @@ async function exportGroupGlb(group: Object3D): Promise<Blob> {
   });
 }
 
-async function exportGroupUsdz(group: Object3D): Promise<Blob> {
+async function exportGroupUsdz(
+  group: Object3D,
+  options: ModelExportOptions,
+): Promise<Blob> {
   const exporter = new USDZExporter();
+  reportExportProgress(options, 0.12, "preparing", "Preparing USDZ surfaces");
   const restoreForUsd = makeUsdCompatibleMeshes(group);
 
   try {
+    reportExportProgress(options, 0.34, "exporting", "Writing USDZ package");
     const result = await exporter.parseAsync(group);
-    const optimizedResult = optimizeUsdGeometryPrecision(result);
+    reportExportProgress(options, 0.82, "optimizing", "Optimizing geometry text");
+    const optimizedTextResult = optimizeUsdGeometryPrecision(result);
+    reportExportProgress(options, 0.88, "optimizing", "Loading OpenUSD WASM");
+    const optimizedResult = await optimizeUsdGeometryBinary(
+      optimizedTextResult,
+      options,
+    );
+    reportExportProgress(options, 0.96, "done", "Preparing download");
 
     return new Blob([optimizedResult], {
       type: getModelExportOption("usdz").mimeType,
@@ -145,6 +198,19 @@ async function exportGroupUsdz(group: Object3D): Promise<Blob> {
   } finally {
     restoreForUsd();
   }
+}
+
+function reportExportProgress(
+  options: ModelExportOptions,
+  progress: number,
+  stage: ExportProgressUpdate["stage"],
+  status: string,
+) {
+  options.onProgress?.({
+    progress,
+    stage,
+    status,
+  });
 }
 
 function optimizeUsdGeometryPrecision(result: ArrayBuffer | Uint8Array) {
@@ -174,6 +240,125 @@ function optimizeUsdGeometryPrecision(result: ArrayBuffer | Uint8Array) {
   }
 
   return getArrayBuffer(zipUsdFiles(files));
+}
+
+async function optimizeUsdGeometryBinary(
+  result: ArrayBuffer,
+  options: ModelExportOptions,
+) {
+  try {
+    const files = unzipSync(new Uint8Array(result));
+    const geometryEntries = Object.entries(files).filter(
+      ([filename]) =>
+        filename.startsWith("geometries/") && filename.endsWith(".usda"),
+    );
+
+    if (geometryEntries.length === 0 || !files["model.usda"]) {
+      return result;
+    }
+
+    const pxr = await getOpenUsdPxr();
+    const outputDirectory = `/tmp/medal-forge-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    pxr.FS.mkdirp(outputDirectory);
+
+    let convertedCount = 0;
+
+    for (const [index, [filename, data]] of geometryEntries.entries()) {
+      reportExportProgress(
+        options,
+        0.88 + (index / geometryEntries.length) * 0.06,
+        "optimizing",
+        `Converting geometry ${index + 1}/${geometryEntries.length}`,
+      );
+
+      const targetFilename = filename.replace(/\.usda$/u, ".usdc");
+      const outputPath = `${outputDirectory}/${targetFilename.replace(
+        /[^A-Za-z0-9_.-]/g,
+        "_",
+      )}`;
+      const layer = pxr.Sdf.Layer.CreateAnonymous(filename);
+
+      try {
+        if (!layer.ImportFromString(strFromU8(data))) {
+          return result;
+        }
+
+        if (!layer.Export(outputPath)) {
+          return result;
+        }
+
+        files[targetFilename] = coerceUint8Array(pxr.FS.readFile(outputPath));
+        delete files[filename];
+        pxr.FS.deleteFile(outputPath);
+        convertedCount += 1;
+      } finally {
+        layer.delete?.();
+      }
+    }
+
+    if (convertedCount === 0) {
+      return result;
+    }
+
+    files["model.usda"] = strToU8(
+      strFromU8(files["model.usda"]).replace(
+        USD_GEOMETRY_REFERENCE_PATTERN,
+        "@./geometries/$1.usdc@",
+      ),
+    );
+
+    const optimizedResult = getArrayBuffer(zipUsdFiles(files));
+
+    return optimizedResult.byteLength < result.byteLength
+      ? optimizedResult
+      : result;
+  } catch {
+    return result;
+  }
+}
+
+async function getOpenUsdPxr() {
+  const coreURL = getOpenUsdAssetUrl(OPENUSD_CORE_SCRIPT_PATH);
+  const wasmURL = getOpenUsdAssetUrl(OPENUSD_CORE_WASM_PATH);
+
+  openUsdPxrPromise ??= Promise.all([
+    import(/* webpackIgnore: true */ coreURL),
+    import("@openusd-wasm/pxr"),
+  ]).then(([coreModule, pxrModule]) =>
+    pxrModule.createPxr({
+      core: coreModule.default,
+      coreURL,
+      wasmURL,
+      workerURL: coreURL,
+    }) as unknown as Promise<OpenUsdPxr>,
+  ).catch((error: unknown) => {
+    openUsdPxrPromise = null;
+    throw error;
+  });
+
+  return openUsdPxrPromise;
+}
+
+function getOpenUsdAssetUrl(path: string) {
+  return new URL(path, globalThis.location.href).href;
+}
+
+function coerceUint8Array(value: unknown) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+
+  throw new Error("Unable to read OpenUSD output");
 }
 
 function optimizeUsdaGeometryText(text: string) {
@@ -535,8 +720,10 @@ function getSurfaceBuildBucket(
 
   const bucket = {
     attributes: new Map<string, number[]>(),
+    indices: [],
     material,
     name,
+    vertexKeys: new Map<string, number>(),
   };
   buckets.set(key, bucket);
 
@@ -558,23 +745,70 @@ function appendTriangleToBucket(
   );
 
   for (const name of Object.keys(source.attributes)) {
-    const attribute = source.getAttribute(name);
-    let target = bucket.attributes.get(name);
-
-    if (!target) {
-      target = [];
-      bucket.attributes.set(name, target);
-    }
-
-    for (const vertex of order) {
-      appendAttributeItem(
-        attribute,
-        target,
-        vertex,
-        name === "normal" ? normalMultiplier : 1,
-      );
+    if (!bucket.attributes.has(name)) {
+      bucket.attributes.set(name, []);
     }
   }
+
+  for (const vertex of order) {
+    bucket.indices.push(
+      appendVertexToBucket(bucket, source, vertex, normalMultiplier),
+    );
+  }
+}
+
+function appendVertexToBucket(
+  bucket: UsdSurfaceBuildBucket,
+  source: BufferGeometry,
+  sourceVertex: number,
+  normalMultiplier: number,
+) {
+  const attributeValues = new Map<string, number[]>();
+  const keyParts: string[] = [];
+
+  for (const name of Object.keys(source.attributes)) {
+    const attribute = source.getAttribute(name);
+    const multiplier = name === "normal" ? normalMultiplier : 1;
+    const values: number[] = [];
+
+    keyParts.push(name);
+
+    for (let itemIndex = 0; itemIndex < attribute.itemSize; itemIndex += 1) {
+      const value = attribute.getComponent(sourceVertex, itemIndex) * multiplier;
+
+      values.push(value);
+      keyParts.push(formatVertexKeyNumber(value));
+    }
+
+    attributeValues.set(name, values);
+  }
+
+  const key = keyParts.join("|");
+  const existing = bucket.vertexKeys.get(key);
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const vertexIndex =
+    (bucket.attributes.get("position")?.length ?? 0) /
+    (source.getAttribute("position")?.itemSize ?? 3);
+
+  for (const [name, values] of attributeValues) {
+    bucket.attributes.get(name)?.push(...values);
+  }
+
+  bucket.vertexKeys.set(key, vertexIndex);
+
+  return vertexIndex;
+}
+
+function formatVertexKeyNumber(value: number) {
+  const normalizedValue = Object.is(value, -0) ? 0 : value;
+
+  return Number(
+    normalizedValue.toPrecision(USD_VERTEX_KEY_FLOAT_PRECISION),
+  ).toString();
 }
 
 function getTriangleExportOrientation(
@@ -663,22 +897,12 @@ function createGeometryFromBucket(
     );
   }
 
+  geometry.setIndex(bucket.indices);
   geometry.name = bucket.name;
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
 
   return geometry;
-}
-
-function appendAttributeItem(
-  attribute: GeometryAttribute,
-  target: number[],
-  sourceVertex: number,
-  multiplier: number,
-) {
-  for (let itemIndex = 0; itemIndex < attribute.itemSize; itemIndex += 1) {
-    target.push(attribute.getComponent(sourceVertex, itemIndex) * multiplier);
-  }
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

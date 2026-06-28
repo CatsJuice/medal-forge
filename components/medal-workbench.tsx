@@ -30,6 +30,8 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { flushSync } from "react-dom";
+import { ExportQueuePanel } from "@/components/export-queue-panel";
 import { ModelPreview } from "@/components/model-preview";
 import {
   DEFAULT_FILE_NAME,
@@ -39,10 +41,10 @@ import {
 import {
   MODEL_EXPORT_OPTIONS,
   downloadBlob,
-  exportMedalModel,
   getModelExportOption,
   type ModelExportFormat,
 } from "@/lib/export-model";
+import { enqueueModelExport } from "@/lib/export-queue";
 import { MATERIAL_PRESETS } from "@/lib/materials";
 import { getShapeLabel, getSvgColor, resolveShapeSettings } from "@/lib/shape-settings";
 import { summarizeSvgPaths } from "@/lib/svg-summary";
@@ -609,6 +611,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
   const layerNameInputRef = useRef<HTMLInputElement>(null);
   const layerNameEditCancelledRef = useRef(false);
   const autoSaveSpinnerTimerRef = useRef<number | null>(null);
+  const isImportingSvgRef = useRef(false);
   const [lastSavedSignature, setLastSavedSignature] = useState(() =>
     createWorkPayloadSignature({
       title: defaultTitle,
@@ -1380,6 +1383,11 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
   }
 
   async function loadSvgFile(file: File) {
+    if (isImportingSvgRef.current) {
+      setStatus("Import already in progress");
+      return;
+    }
+
     if (!file.name.toLowerCase().endsWith(".svg")) {
       setStatus("Only SVG uploads are accepted");
       return;
@@ -1391,15 +1399,30 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
       return;
     }
 
-    const text = await file.text();
-    resetForNewWork(file.name, !hasPersistedWork);
-    setSvgText(text);
-    setFileName(file.name);
-    setSettings((current) => ({
-      ...current,
-      shapeSettings: {},
-    }));
-    setStatus(`Loaded ${file.name}`);
+    isImportingSvgRef.current = true;
+    setIsBusy(true);
+    setStatus(`Loading ${file.name}`);
+
+    try {
+      const text = await file.text();
+
+      flushSync(() => {
+        resetForNewWork(file.name, !hasPersistedWork);
+        setSvgText(text);
+        setFileName(file.name);
+        setSettings((current) => ({
+          ...current,
+          shapeSettings: {},
+        }));
+      });
+
+      setStatus(`Loaded ${file.name}`);
+    } catch {
+      setStatus("Import failed");
+    } finally {
+      isImportingSvgRef.current = false;
+      setIsBusy(false);
+    }
   }
 
   async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -1433,21 +1456,21 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
     }
   }
 
-  async function exportModel(format: ModelExportFormat) {
+  function exportModel(format: ModelExportFormat) {
+    if (isImportingSvgRef.current) {
+      setStatus("Finish loading SVG before exporting");
+      return;
+    }
+
     const option = getModelExportOption(format);
 
-    setIsBusy(true);
-    setStatus(`Preparing ${option.label} export`);
-
-    try {
-      const blob = await exportMedalModel(svgText, settings, format);
-      downloadBlob(blob, `${getFileStem(fileName)}.${option.extension}`);
-      setStatus(`${option.label} exported`);
-    } catch {
-      setStatus(`${option.label} export failed`);
-    } finally {
-      setIsBusy(false);
-    }
+    enqueueModelExport({
+      fileName: `${getFileStem(fileName)}.${option.extension}`,
+      format,
+      settings,
+      svgText,
+    });
+    setStatus(`${option.label} export queued`);
   }
 
   async function saveWork() {
@@ -1470,6 +1493,11 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
   }
 
   async function exportWorkJson() {
+    if (isImportingSvgRef.current) {
+      setStatus("Finish loading SVG before exporting");
+      return;
+    }
+
     let document = createCurrentWorkDocument(
       createTimestamp(),
       workMeta.snapshot,
@@ -1560,6 +1588,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
           )}
         </div>
         <div className="topbar-actions">
+          <ExportQueuePanel variant="toolbar" />
           <button
             aria-label="Save work"
             className={`text-button save-action ${saveButtonStateClass}`}
@@ -1593,6 +1622,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                       ? "upload-dropzone drag-active"
                       : "upload-dropzone"
                   }
+                  disabled={isBusy}
                   onClick={() => uploadInputRef.current?.click()}
                   onDragLeave={handleDropzoneDragLeave}
                   onDragOver={handleDropzoneDragOver}
@@ -1606,6 +1636,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                 <input
                   accept=".svg,image/svg+xml"
                   className="hidden-input"
+                  disabled={isBusy}
                   onChange={handleFileChange}
                   ref={uploadInputRef}
                   type="file"
@@ -2072,8 +2103,8 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                         ? "text-button primary export-button"
                         : "text-button export-button"
                     }
-                    disabled={isBusy}
                     key={option.format}
+                    disabled={isBusy}
                     onClick={() => exportModel(option.format)}
                     type="button"
                   >
@@ -2083,6 +2114,7 @@ export function MedalWorkbench({ initialWorkId }: MedalWorkbenchProps) {
                 ))}
                 <button
                   className="text-button export-button"
+                  disabled={isBusy}
                   onClick={exportWorkJson}
                   type="button"
                 >

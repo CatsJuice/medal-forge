@@ -15,6 +15,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { ExportQueuePanel } from "@/components/export-queue-panel";
 import {
   HomeLivePreviewLayer,
   type HomeLivePreviewRect,
@@ -30,10 +31,10 @@ import {
 import {
   MODEL_EXPORT_OPTIONS,
   downloadBlob,
-  exportMedalModel,
   getModelExportOption,
   type ModelExportFormat,
 } from "@/lib/export-model";
+import { enqueueModelExport } from "@/lib/export-queue";
 import { waitForIdle } from "@/lib/idle";
 import { generateWorkSnapshot, needsSnapshot } from "@/lib/snapshot";
 import type { SavedWorkSummary, WorkDocument } from "@/lib/types";
@@ -1105,15 +1106,12 @@ export function WorkspaceHome() {
 
     const asset = getPrimarySvgAsset(document);
     const option = getModelExportOption(format);
-    const blob = await exportMedalModel(
-      asset.text,
-      document.scene.settings,
+    enqueueModelExport({
+      fileName: `${getSafeFileStem(document.document.title)}.${option.extension}`,
       format,
-    );
-    downloadBlob(
-      blob,
-      `${getSafeFileStem(document.document.title)}.${option.extension}`,
-    );
+      settings: document.scene.settings,
+      svgText: asset.text,
+    });
   }
 
   async function deleteWork(work: SavedWorkSummary) {
@@ -1463,6 +1461,7 @@ export function WorkspaceHome() {
         ref={importInputRef}
         type="file"
       />
+      <ExportQueuePanel />
     </main>
   );
 }

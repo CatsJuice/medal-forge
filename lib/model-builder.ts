@@ -375,6 +375,7 @@ function getLayerOffset(pathIndex: number): number {
 }
 
 function addEmptyPlaceholder(group: THREE.Group) {
+  group.userData.isEmptyPlaceholder = true;
   const material = new THREE.MeshStandardMaterial({
     color: "#d8a737",
     metalness: 1,
