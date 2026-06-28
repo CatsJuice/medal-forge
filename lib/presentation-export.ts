@@ -93,8 +93,7 @@ const DEFAULT_EXPORT_DURATION_SECONDS = 5;
 const MIN_EXPORT_DURATION_SECONDS = 1;
 const MAX_EXPORT_DURATION_SECONDS = 12;
 const MIN_FLIP_SPEED_DEG_PER_SECOND = 30;
-const FFMPEG_CORE_BASE_URL =
-  "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+const FFMPEG_CORE_BASE_PATH = "/api/ffmpeg-core";
 
 let presentationFfmpegPromise: Promise<PresentationFfmpeg> | null = null;
 
@@ -450,21 +449,11 @@ async function loadPresentationFfmpeg(options: PresentationExportOptions) {
         "Loading ProRes MOV encoder",
       );
       const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const { toBlobURL } = await import("@ffmpeg/util");
       const ffmpeg = new FFmpeg();
-      const [coreURL, wasmURL] = await Promise.all([
-        toBlobURL(
-          `${FFMPEG_CORE_BASE_URL}/ffmpeg-core.js`,
-          "text/javascript",
-        ),
-        toBlobURL(
-          `${FFMPEG_CORE_BASE_URL}/ffmpeg-core.wasm`,
-          "application/wasm",
-        ),
-      ]);
       await ffmpeg.load({
-        coreURL,
-        wasmURL,
+        classWorkerURL: getSameOriginUrl("/ffmpeg/worker.js"),
+        coreURL: getSameOriginUrl(`${FFMPEG_CORE_BASE_PATH}/ffmpeg-core.js`),
+        wasmURL: getSameOriginUrl(`${FFMPEG_CORE_BASE_PATH}/ffmpeg-core.wasm`),
       });
 
       return ffmpeg;
@@ -475,6 +464,14 @@ async function loadPresentationFfmpeg(options: PresentationExportOptions) {
   }
 
   return presentationFfmpegPromise;
+}
+
+function getSameOriginUrl(pathname: string) {
+  if (typeof self !== "undefined" && self.location) {
+    return new URL(pathname, self.location.origin).toString();
+  }
+
+  return pathname;
 }
 
 async function encodePngFrame(canvas: OffscreenCanvas) {

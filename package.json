@@ -14,7 +14,6 @@
   "type": "module",
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",
-    "@ffmpeg/util": "^0.12.2",
     "@openusd-wasm/pxr": "^0.0.6",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.0",

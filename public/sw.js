@@ -1,4 +1,4 @@
-const APP_VERSION = "2026-06-28-v1";
+const APP_VERSION = "2026-06-28-v3";
 const CORE_CACHE = `medal-forge-core-${APP_VERSION}`;
 const RUNTIME_CACHE = `medal-forge-runtime-${APP_VERSION}`;
 const PRECACHE_MESSAGE_TYPE = "MEDAL_FORGE_PRECACHE_URLS";
@@ -223,6 +223,10 @@ self.addEventListener("fetch", (event) => {
   }
 
   const url = new URL(request.url);
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return;
+  }
 
   if (!isSameOrigin(url) || url.pathname === "/sw.js") {
     return;
