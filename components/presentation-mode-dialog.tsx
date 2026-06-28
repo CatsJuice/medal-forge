@@ -27,13 +27,22 @@ import {
   DEFAULT_PRESENTATION_FLIP_START_ANGLES,
   DEFAULT_PRESENTATION_FRAME_RATE,
   DEFAULT_PRESENTATION_QUALITY,
-  DEFAULT_PRESENTATION_SPIN_SPEEDS,
+  DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS,
+  DEFAULT_PRESENTATION_SPIN_START_ANGLES,
   MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
   MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+  MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
+  MAX_PRESENTATION_SPIN_ANGLE_DEGREES,
+  MAX_PRESENTATION_SPIN_FREQUENCY_HZ,
+  MAX_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND,
   MIN_PRESENTATION_FLIP_ANGLE_DEGREES,
   MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS,
   MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND,
+  MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
+  MIN_PRESENTATION_SPIN_ANGLE_DEGREES,
+  MIN_PRESENTATION_SPIN_FREQUENCY_HZ,
+  MIN_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND,
   PRESENTATION_EXPORT_OPTIONS,
   PRESENTATION_QUALITY_OPTIONS,
   getCompatiblePresentationFrameRate,
@@ -47,7 +56,9 @@ import {
   type PresentationFrameRate,
   type PresentationExportQuality,
   type PresentationMode,
-  type PresentationSpinSpeeds,
+  type PresentationSpinAnimationMode,
+  type PresentationSpinAxisAnimation,
+  type PresentationSpinAxisAnimations,
 } from "@/lib/presentation-export";
 import {
   enqueuePresentationExport,
@@ -93,6 +104,38 @@ const MODE_OPTIONS: Array<{ label: string; value: PresentationMode }> = [
   {
     label: "Flip",
     value: "flip",
+  },
+];
+
+const SPIN_AXIS_OPTIONS: Array<{
+  label: string;
+  value: keyof PresentationSpinAxisAnimations;
+}> = [
+  {
+    label: "X axis",
+    value: "x",
+  },
+  {
+    label: "Y axis",
+    value: "y",
+  },
+  {
+    label: "Z axis",
+    value: "z",
+  },
+];
+
+const SPIN_ANIMATION_MODE_OPTIONS: Array<{
+  label: string;
+  value: PresentationSpinAnimationMode;
+}> = [
+  {
+    label: "Linear",
+    value: "linear",
+  },
+  {
+    label: "Sine",
+    value: "sine",
   },
 ];
 
@@ -266,9 +309,12 @@ export function PresentationModeDialog({
   svgText,
 }: PresentationModeDialogProps) {
   const [mode, setMode] = useState<PresentationMode>("spin");
-  const [spinSpeeds, setSpinSpeeds] = useState<PresentationSpinSpeeds>(
-    DEFAULT_PRESENTATION_SPIN_SPEEDS,
-  );
+  const [spinStartAngles, setSpinStartAngles] =
+    useState<PresentationEulerAngles>(DEFAULT_PRESENTATION_SPIN_START_ANGLES);
+  const [spinAxisAnimations, setSpinAxisAnimations] =
+    useState<PresentationSpinAxisAnimations>(
+      DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS,
+    );
   const [flipStartAngles, setFlipStartAngles] =
     useState<PresentationEulerAngles>(
       DEFAULT_PRESENTATION_FLIP_START_ANGLES,
@@ -310,11 +356,12 @@ export function PresentationModeDialog({
     }
 
     return {
+      axisAnimations: spinAxisAnimations,
       durationSeconds,
       frameRate,
       mode,
       quality,
-      rotationSpeeds: spinSpeeds,
+      startAngles: spinStartAngles,
     };
   }, [
     durationSeconds,
@@ -325,7 +372,8 @@ export function PresentationModeDialog({
     frameRate,
     mode,
     quality,
-    spinSpeeds,
+    spinAxisAnimations,
+    spinStartAngles,
   ]);
 
   const qualityOption = getPresentationQualityOption(quality);
@@ -381,10 +429,26 @@ export function PresentationModeDialog({
     }, PRESENTATION_DIALOG_EXIT_MS);
   }
 
-  function updateSpinSpeed(axis: keyof PresentationSpinSpeeds, value: number) {
-    setSpinSpeeds((current) => ({
+  function updateSpinStartAngle(
+    axis: keyof PresentationEulerAngles,
+    value: number,
+  ) {
+    setSpinStartAngles((current) => ({
       ...current,
       [axis]: value,
+    }));
+  }
+
+  function updateSpinAxisAnimation(
+    axis: keyof PresentationSpinAxisAnimations,
+    patch: Partial<PresentationSpinAxisAnimation>,
+  ) {
+    setSpinAxisAnimations((current) => ({
+      ...current,
+      [axis]: {
+        ...current[axis],
+        ...patch,
+      },
     }));
   }
 
@@ -410,7 +474,8 @@ export function PresentationModeDialog({
 
   function resetCurrentMode() {
     if (mode === "spin") {
-      setSpinSpeeds(DEFAULT_PRESENTATION_SPIN_SPEEDS);
+      setSpinStartAngles(DEFAULT_PRESENTATION_SPIN_START_ANGLES);
+      setSpinAxisAnimations(DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS);
       return;
     }
 
@@ -517,30 +582,124 @@ export function PresentationModeDialog({
               <div className="presentation-control-stack">
                 {mode === "spin" ? (
                   <>
-                    <NumberField
-                      label="X speed"
-                      max={720}
-                      min={-720}
-                      onChange={(value) => updateSpinSpeed("x", value)}
-                      unit="deg/s"
-                      value={spinSpeeds.x}
-                    />
-                    <NumberField
-                      label="Y speed"
-                      max={720}
-                      min={-720}
-                      onChange={(value) => updateSpinSpeed("y", value)}
-                      unit="deg/s"
-                      value={spinSpeeds.y}
-                    />
-                    <NumberField
-                      label="Z speed"
-                      max={720}
-                      min={-720}
-                      onChange={(value) => updateSpinSpeed("z", value)}
-                      unit="deg/s"
-                      value={spinSpeeds.z}
-                    />
+                    <div className="presentation-angle-group">
+                      <span className="presentation-angle-group-title">
+                        Initial angle
+                      </span>
+                      <div className="presentation-angle-grid">
+                        <NumberField
+                          ariaLabel="Rotate initial X angle"
+                          label="X"
+                          max={MAX_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          onChange={(value) => updateSpinStartAngle("x", value)}
+                          step={1}
+                          unit="deg"
+                          value={spinStartAngles.x}
+                        />
+                        <NumberField
+                          ariaLabel="Rotate initial Y angle"
+                          label="Y"
+                          max={MAX_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          onChange={(value) => updateSpinStartAngle("y", value)}
+                          step={1}
+                          unit="deg"
+                          value={spinStartAngles.y}
+                        />
+                        <NumberField
+                          ariaLabel="Rotate initial Z angle"
+                          label="Z"
+                          max={MAX_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          min={MIN_PRESENTATION_SPIN_ANGLE_DEGREES}
+                          onChange={(value) => updateSpinStartAngle("z", value)}
+                          step={1}
+                          unit="deg"
+                          value={spinStartAngles.z}
+                        />
+                      </div>
+                    </div>
+                    {SPIN_AXIS_OPTIONS.map((axisOption) => {
+                      const axisAnimation =
+                        spinAxisAnimations[axisOption.value];
+
+                      return (
+                        <div
+                          className="presentation-angle-group"
+                          key={axisOption.value}
+                        >
+                          <span className="presentation-angle-group-title">
+                            {axisOption.label}
+                          </span>
+                          <label className="presentation-control-row">
+                            <span>Motion</span>
+                            <select
+                              className="presentation-select"
+                              onChange={(event) =>
+                                updateSpinAxisAnimation(axisOption.value, {
+                                  mode: event.target
+                                    .value as PresentationSpinAnimationMode,
+                                })
+                              }
+                              value={axisAnimation.mode}
+                            >
+                              {SPIN_ANIMATION_MODE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          {axisAnimation.mode === "linear" ? (
+                            <NumberField
+                              ariaLabel={`${axisOption.label} linear speed`}
+                              label="Speed"
+                              max={MAX_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND}
+                              min={MIN_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND}
+                              onChange={(value) =>
+                                updateSpinAxisAnimation(axisOption.value, {
+                                  speedDegPerSecond: value,
+                                })
+                              }
+                              step={1}
+                              unit="deg/s"
+                              value={axisAnimation.speedDegPerSecond}
+                            />
+                          ) : (
+                            <div className="presentation-angle-grid">
+                              <NumberField
+                                ariaLabel={`${axisOption.label} sine amplitude`}
+                                label="Amplitude"
+                                max={MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES}
+                                min={MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES}
+                                onChange={(value) =>
+                                  updateSpinAxisAnimation(axisOption.value, {
+                                    amplitudeDegrees: value,
+                                  })
+                                }
+                                step={1}
+                                unit="deg"
+                                value={axisAnimation.amplitudeDegrees}
+                              />
+                              <NumberField
+                                ariaLabel={`${axisOption.label} sine frequency`}
+                                label="Frequency"
+                                max={MAX_PRESENTATION_SPIN_FREQUENCY_HZ}
+                                min={MIN_PRESENTATION_SPIN_FREQUENCY_HZ}
+                                onChange={(value) =>
+                                  updateSpinAxisAnimation(axisOption.value, {
+                                    frequencyHz: value,
+                                  })
+                                }
+                                step={0.05}
+                                unit="Hz"
+                                value={axisAnimation.frequencyHz}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </>
                 ) : (
                   <>
@@ -549,7 +708,7 @@ export function PresentationModeDialog({
                       max={MAX_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND}
                       min={MIN_PRESENTATION_FLIP_SPEED_DEG_PER_SECOND}
                       onChange={setFlipSpeed}
-                      step={30}
+                      step={10}
                       unit="deg/s"
                       value={flipSpeed}
                     />
@@ -574,7 +733,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipStartAngle("x", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipStartAngles.x}
                         />
@@ -584,7 +743,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipStartAngle("y", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipStartAngles.y}
                         />
@@ -594,7 +753,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipStartAngle("z", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipStartAngles.z}
                         />
@@ -611,7 +770,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipEndAngle("x", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipEndAngles.x}
                         />
@@ -621,7 +780,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipEndAngle("y", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipEndAngles.y}
                         />
@@ -631,7 +790,7 @@ export function PresentationModeDialog({
                           max={MAX_PRESENTATION_FLIP_ANGLE_DEGREES}
                           min={MIN_PRESENTATION_FLIP_ANGLE_DEGREES}
                           onChange={(value) => updateFlipEndAngle("z", value)}
-                          step={5}
+                          step={1}
                           unit="deg"
                           value={flipEndAngles.z}
                         />

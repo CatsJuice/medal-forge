@@ -10,14 +10,22 @@ import type { ExportProgressUpdate } from "@/lib/export-worker-types";
 import type { MedalSettings } from "@/lib/types";
 
 export type PresentationMode = "flip" | "spin";
+export type PresentationSpinAnimationMode = "linear" | "sine";
 export type PresentationExportFormat = "gif" | "mov";
 export type PresentationFrameRate = 15 | 24 | 30 | 50 | 60;
 export type PresentationExportQuality = "draft" | "high" | "standard";
 
-export interface PresentationSpinSpeeds {
-  x: number;
-  y: number;
-  z: number;
+export interface PresentationSpinAxisAnimation {
+  amplitudeDegrees: number;
+  frequencyHz: number;
+  mode: PresentationSpinAnimationMode;
+  speedDegPerSecond: number;
+}
+
+export interface PresentationSpinAxisAnimations {
+  x: PresentationSpinAxisAnimation;
+  y: PresentationSpinAxisAnimation;
+  z: PresentationSpinAxisAnimation;
 }
 
 export interface PresentationEulerAngles {
@@ -35,8 +43,9 @@ export interface PresentationBaseExportConfig {
 
 export interface PresentationSpinExportConfig
   extends PresentationBaseExportConfig {
+  axisAnimations: PresentationSpinAxisAnimations;
   mode: "spin";
-  rotationSpeeds: PresentationSpinSpeeds;
+  startAngles: PresentationEulerAngles;
 }
 
 export interface PresentationFlipExportConfig
@@ -122,6 +131,14 @@ export const MIN_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS = 0;
 export const MAX_PRESENTATION_FLIP_PLAYBACK_INTERVAL_SECONDS = 10;
 export const MIN_PRESENTATION_FLIP_ANGLE_DEGREES = -3600;
 export const MAX_PRESENTATION_FLIP_ANGLE_DEGREES = 3600;
+export const MIN_PRESENTATION_SPIN_ANGLE_DEGREES = -3600;
+export const MAX_PRESENTATION_SPIN_ANGLE_DEGREES = 3600;
+export const MIN_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND = -720;
+export const MAX_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND = 720;
+export const MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES = 0;
+export const MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES = 3600;
+export const MIN_PRESENTATION_SPIN_FREQUENCY_HZ = 0;
+export const MAX_PRESENTATION_SPIN_FREQUENCY_HZ = 10;
 
 let presentationProResModulePromise:
   | Promise<PresentationProResModule>
@@ -146,10 +163,32 @@ interface GifPaletteBucket {
   score: number;
 }
 
-export const DEFAULT_PRESENTATION_SPIN_SPEEDS: PresentationSpinSpeeds = {
-  x: 0,
-  y: 72,
-  z: 0,
+export const DEFAULT_PRESENTATION_SPIN_START_ANGLES: PresentationEulerAngles = {
+  x: 43,
+  y: 0,
+  z: 7,
+};
+
+export const DEFAULT_PRESENTATION_SPIN_AXIS_ANIMATIONS: PresentationSpinAxisAnimations =
+  {
+    x: {
+      amplitudeDegrees: 10,
+      frequencyHz: 0.25,
+      mode: "sine",
+      speedDegPerSecond: 0,
+    },
+    y: {
+      amplitudeDegrees: 180,
+      frequencyHz: 0.35,
+      mode: "linear",
+      speedDegPerSecond: 72,
+    },
+    z: {
+      amplitudeDegrees: 2,
+      frequencyHz: 0.1,
+      mode: "sine",
+      speedDegPerSecond: 0,
+    },
 };
 
 export const DEFAULT_PRESENTATION_FLIP_START_ANGLES: PresentationEulerAngles = {
@@ -280,14 +319,21 @@ export function getPresentationRotation(
   options: { loop?: boolean } = {},
 ) {
   if (config.mode === "spin") {
+    const startAngles = config.startAngles;
+
     return {
-      x:
-        HOME_PREVIEW_ROTATION_X +
-        THREE.MathUtils.degToRad(config.rotationSpeeds.x * elapsedSeconds),
-      y:
-        HOME_PREVIEW_ROTATION_Y +
-        THREE.MathUtils.degToRad(config.rotationSpeeds.y * elapsedSeconds),
-      z: THREE.MathUtils.degToRad(config.rotationSpeeds.z * elapsedSeconds),
+      x: THREE.MathUtils.degToRad(
+        startAngles.x +
+          getPresentationSpinAxisOffset(config.axisAnimations.x, elapsedSeconds),
+      ),
+      y: THREE.MathUtils.degToRad(
+        startAngles.y +
+          getPresentationSpinAxisOffset(config.axisAnimations.y, elapsedSeconds),
+      ),
+      z: THREE.MathUtils.degToRad(
+        startAngles.z +
+          getPresentationSpinAxisOffset(config.axisAnimations.z, elapsedSeconds),
+      ),
     };
   }
 
@@ -399,11 +445,10 @@ function normalizePresentationConfig(
     frameRate,
     mode: "spin",
     quality,
-    rotationSpeeds: {
-      x: clampNumber(config.rotationSpeeds.x, -720, 720),
-      y: clampNumber(config.rotationSpeeds.y, -720, 720),
-      z: clampNumber(config.rotationSpeeds.z, -720, 720),
-    },
+    axisAnimations: normalizePresentationSpinAxisAnimations(
+      config.axisAnimations,
+    ),
+    startAngles: normalizePresentationSpinStartAngles(config.startAngles),
   };
 }
 
@@ -675,6 +720,75 @@ function normalizePresentationEulerAngles(
       MAX_PRESENTATION_FLIP_ANGLE_DEGREES,
     ),
   };
+}
+
+function normalizePresentationSpinStartAngles(
+  angles: PresentationEulerAngles,
+): PresentationEulerAngles {
+  return {
+    x: clampNumber(
+      angles.x,
+      MIN_PRESENTATION_SPIN_ANGLE_DEGREES,
+      MAX_PRESENTATION_SPIN_ANGLE_DEGREES,
+    ),
+    y: clampNumber(
+      angles.y,
+      MIN_PRESENTATION_SPIN_ANGLE_DEGREES,
+      MAX_PRESENTATION_SPIN_ANGLE_DEGREES,
+    ),
+    z: clampNumber(
+      angles.z,
+      MIN_PRESENTATION_SPIN_ANGLE_DEGREES,
+      MAX_PRESENTATION_SPIN_ANGLE_DEGREES,
+    ),
+  };
+}
+
+function normalizePresentationSpinAxisAnimations(
+  animations: PresentationSpinAxisAnimations,
+): PresentationSpinAxisAnimations {
+  return {
+    x: normalizePresentationSpinAxisAnimation(animations.x),
+    y: normalizePresentationSpinAxisAnimation(animations.y),
+    z: normalizePresentationSpinAxisAnimation(animations.z),
+  };
+}
+
+function normalizePresentationSpinAxisAnimation(
+  animation: PresentationSpinAxisAnimation,
+): PresentationSpinAxisAnimation {
+  return {
+    amplitudeDegrees: clampNumber(
+      Math.abs(animation.amplitudeDegrees),
+      MIN_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
+      MAX_PRESENTATION_SPIN_AMPLITUDE_DEGREES,
+    ),
+    frequencyHz: clampNumber(
+      Math.abs(animation.frequencyHz),
+      MIN_PRESENTATION_SPIN_FREQUENCY_HZ,
+      MAX_PRESENTATION_SPIN_FREQUENCY_HZ,
+    ),
+    mode: animation.mode === "sine" ? "sine" : "linear",
+    speedDegPerSecond: clampNumber(
+      animation.speedDegPerSecond,
+      MIN_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND,
+      MAX_PRESENTATION_SPIN_SPEED_DEG_PER_SECOND,
+    ),
+  };
+}
+
+function getPresentationSpinAxisOffset(
+  animation: PresentationSpinAxisAnimation,
+  elapsedSeconds: number,
+) {
+  if (animation.mode === "sine") {
+    return (
+      animation.amplitudeDegrees *
+      Math.sin(elapsedSeconds * animation.frequencyHz * Math.PI * 2)
+    );
+  }
+
+  return animation.speedDegPerSecond * elapsedSeconds;
 }
 
 function getPresentationFlipAngleTravel(

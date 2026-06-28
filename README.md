@@ -1,5 +1,7 @@
 # Medal Forge
 
+![Medal Forge preview](public/showcase/medal-forge-demo.gif)
+
 A focused Next.js prototype for turning uploaded SVG files into simple 3D medal, badge, and metal plate models.
 
 ## What works now
